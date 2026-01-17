@@ -1,0 +1,62 @@
+{
+    "model_path": "deepseek-ai/Janus-Pro-7B",
+    "part_template": "{i}-part",
+    "stages": 1,
+    "image_token_num": 576,
+    "img_size": 384,
+    "patch_size": 16,
+    "generation": {
+        "cfg_weight": 5.0,
+        "temperature": 1.0
+    },
+    "stage_prompt": {
+        "use_understanding": true,
+        "understanding_max_tokens": 128
+    },
+    "latent_control": {
+        "enabled": true,
+        "img_hidden_window": 96,
+        "max_triggers_per_image": 10,
+        "think_prompt_max_tokens": 200,
+        "trigger": {
+            "check_every": 278,
+            "window": 8,
+            "tau_drop": 0.05,
+            "tau_var": 0.002,
+            "tau_entropy": 3.5,   
+            "tau_sim": 0.25
+        },
+        "condenser": {
+            "memory_tokens": 4,
+            "num_heads": 4,
+            "mlp_ratio": 2.0
+        },
+        "long_condenser": {
+            "memory_tokens": 8,
+            "num_heads": 8,
+            "mlp_ratio": 2.0,
+            "chunk_size": 64,
+            "use_fp32_accum": true
+        },
+        "translator": {
+            "hidden_ratio": 2.0,
+            "max_scale": 1.0
+        },
+        "shaper": {
+            "control_tokens": 4,
+            "hidden_ratio": 2.0
+        }
+    },
+    "train_data": {
+        "root_dir": "/nfs/wenjie/wenjie_0104/midjourney-prompts",
+        "max_samples": 50000,
+        "sources": [
+            {
+                "subdir": "data",
+                "template": "{idx:06d}.zstd.parquet",
+                "start": 0,
+                "end": 9
+            }
+        ]
+    }
+}
