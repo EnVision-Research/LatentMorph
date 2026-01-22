@@ -28,8 +28,8 @@ def load_json_config(path: str) -> Dict[str, Any]:
 
 def build_latent_controller_config(data: Dict[str, Any]) -> LatentControllerConfig:
     """
-    把 dict 配置映射成 LatentControllerConfig（含子模块 config）。
-    只解析 latent_control 下的字段；缺省字段沿用 dataclass 默认值。
+    Map a dict config into LatentControllerConfig (including sub-module configs).
+    Only parse fields under `latent_control`; unspecified fields keep dataclass defaults.
     """
     lc = data.get("latent_control", {}) if "latent_control" in data else data
 
@@ -53,7 +53,7 @@ def build_latent_controller_config(data: Dict[str, Any]) -> LatentControllerConf
 
 def resolve_config_path(default_path: str) -> str:
     """
-    支持用环境变量覆盖配置路径：
+    Allow overriding config path via environment variable:
       TWIG_CONFIG=/abs/path/to/models/config.json
     """
     return os.environ.get("TWIG_CONFIG", default_path)

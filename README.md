@@ -1,28 +1,43 @@
 
 ```
 LatentMorph/
-├─ sft_train.sh                  # 训练启动脚本
-├─ latent_sft/                   # SFT/训练与模型封装（主入口在 train/）
+├─ sft_train.sh                  # SFT training launcher
+├─ latent_sft/                   # SFT training + model wrapper (main entry in train/)
 │  ├─ train/
-│  │  ├─ run_control.py          # 训练入口（解析 config + 启动 Trainer）
-│  │  ├─ trainer_control.py      # 训练主逻辑（DDP/FSDP、保存、train_check）
-│  │  └─ ddp_utils.py            # 分布式封装与工具函数
+│  │  ├─ run_control.py          # Entry point (parse config + start Trainer)
+│  │  ├─ trainer_control.py      # Training logic (DDP/FSDP, checkpointing, train_check)
+│  │  └─ ddp_utils.py            # Distributed utilities
 │  └─ models/
-│     ├─ config.json             # 训练配置（数据、模型路径、超参、latent_control 开关）
-│     ├─ config_io.py            # 读取/解析 config.json（含 LatentControllerConfig 构建）
-│     ├─ data.py                 # Parquet 数据读取 + image cache + DataLoader
-│     ├─ prompt.py               # CFG prompt embeds 与 token/vec 工具
+│     ├─ config.json             # Training config (data, model paths, hparams, latent_control switch)
+│     ├─ config_io.py            # Parse config.json (build LatentControllerConfig)
+│     ├─ data.py                 # Parquet loader + image cache + DataLoader
+│     ├─ prompt.py               # CFG prompt embeddings + token/vec utilities
 │     └─ latent_morph.py         # LatentMorph wrapper (main sft train model)
-├─ latent_control/               # 轻量控制模块
+├─ latent_control/               # Lightweight control modules
 │  ├─ controller.py              # LatentController & Config
-│  ├─ trigger.py                 # 触发器（何时注入/检查频率）
-│  ├─ condenser.py               # Condenser（短上下文压缩）
-│  ├─ long_condenser.py          # LongCondenser（长上下文压缩）
-│  ├─ translator.py              # Translator（将 latent/state 映射到 control space）
-│  └─ shaper.py                  # Shaper（生成 control tokens / CFG 控制强度）
-├─ Janus-Pro/                    #  
-└─ data/                         # HF/Torch 缓存等（训练时会被使用）
+│  ├─ trigger.py                 # Trigger (when to inject / check frequency)
+│  ├─ condenser.py               # Condenser (short-context compression)
+│  ├─ long_condenser.py          # LongCondenser (long-context compression)
+│  ├─ translator.py              # Translator (map latent/state to control space)
+│  └─ shaper.py                  # Shaper (produce control tokens / CFG control strength)
+├─ latent_rl/                    # RL: train trigger + condenser to learn when to trigger control
+│  ├─ __init__.py
+│  ├─ data/
+│  │  └─ compbench_prompts.py     # Load T2I-CompBench prompts (txt, one per line)
+│  ├─ rollout/
+│  │  └─ rollout_trigger.py       # rollout: generate image tokens + record trigger decisions
+│  ├─ reward/
+│  │  ├─ combined.py              # reward aggregation: CLIP + HPS
+│  │  ├─ clip_reward.py           # CLIP text-image score
+│  │  └─ hps_reward.py            # HPS-v2.1 score (optional dependency)
+│  ├─ tools/
+│  │  └─ count_compbench_prompts.py  # Count prompts (total / unique)
+│  └─ train/
+│     └─ run_trigger_grpo.py      # RL entry (GRPO/REINFORCE + hinge penalty)
+├─ Janus-Pro/
+└─ data/                         # HF/Torch caches used during training
 ```
 
-using dataset : midjourney-prompts
+Dataset: midjourney-prompts
+
 

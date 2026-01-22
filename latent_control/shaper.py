@@ -9,14 +9,14 @@ import torch.nn as nn
 
 @dataclass
 class ShaperConfig:
-    # 方案 A：把 c 映射成 K 个 control tokens
+    # Option A: map c to K control tokens.
     control_tokens: int = 4
     hidden_ratio: float = 2.0
 
 
 def expand_to_cfg_batch(x: torch.Tensor) -> torch.Tensor:
     """
-    将 [B,...] 扩展为 Janus CFG 的 batch 排布 [2B,...]：
+    Expand [B, ...] into Janus CFG batch layout [2B, ...]:
       [cond0, uncond0, cond1, uncond1, ...]
     """
     if x.dim() == 1:
@@ -28,7 +28,7 @@ def expand_to_cfg_batch(x: torch.Tensor) -> torch.Tensor:
 
 class ControlTokenShaper(nn.Module):
     """
-    Shaper (方案 A): Dynamic control-token injection
+    Shaper (option A): Dynamic control-token injection
       E_ctrl = MLP(c_t) -> [B, K, D]
     """
 
@@ -45,8 +45,8 @@ class ControlTokenShaper(nn.Module):
 
     def make_control_tokens(self, c_vec: torch.Tensor) -> torch.Tensor:
         """
-        输入: c_vec [B, D]
-        输出: E_ctrl [B, K, D]
+        Input:  c_vec [B, D]
+        Output: E_ctrl [B, K, D]
         """
         b, d = c_vec.shape
         out = self.mlp(c_vec).view(b, self.cfg.control_tokens, d)
@@ -54,8 +54,8 @@ class ControlTokenShaper(nn.Module):
 
     def make_control_tokens_for_cfg(self, c_vec: torch.Tensor) -> torch.Tensor:
         """
-        输入: c_vec [B, D]
-        输出: E_ctrl [2B, K, D] (对 cond/uncond 都注入同一控制前缀，避免 CFG 打架)
+        Input:  c_vec [B, D]
+        Output: E_ctrl [2B, K, D] (inject the same control prefix to both cond/uncond to avoid CFG conflict)
         """
         e = self.make_control_tokens(c_vec)  # [B,K,D]
         return expand_to_cfg_batch(e)        # [2B,K,D]

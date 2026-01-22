@@ -9,15 +9,15 @@ import torch.nn as nn
 
 @dataclass
 class LongCondenserConfig:
-    # 输出固定 M 个 memory tokens
+    # Output a fixed number (M) of memory tokens.
     memory_tokens: int = 8
-    # 注意力头数（需要整除 d_model）
+    # Number of attention heads (must divide d_model).
     num_heads: int = 8
     # MLP hidden ratio
     mlp_ratio: float = 2.0
-    # 分块大小
+    # Chunk size for streaming attention.
     chunk_size: int = 32
-    # 是否用 float32 
+    # Whether to accumulate in float32.
     use_fp32_accum: bool = True
 
 
@@ -41,7 +41,7 @@ class LongAttentionCondenser(nn.Module):
 
         self.latents = nn.Parameter(torch.randn(int(cfg.memory_tokens), self.d_model) * 0.02)
 
-        # 手写 MHA 投影，便于做 streaming softmax
+        # Explicit MHA projections to support streaming softmax.
         self.q_proj = nn.Linear(self.d_model, self.d_model, bias=True)
         self.k_proj = nn.Linear(self.d_model, self.d_model, bias=True)
         self.v_proj = nn.Linear(self.d_model, self.d_model, bias=True)
@@ -64,11 +64,18 @@ class LongAttentionCondenser(nn.Module):
         if s <= 0:
             raise ValueError("h_img_seq must have S>0")
 
+        # Align dtype with projection weights to avoid half/float matmul errors
+        proj_dtype = self.q_proj.weight.dtype
+        if h_img_seq.dtype != proj_dtype:
+            h_img_seq = h_img_seq.to(dtype=proj_dtype)
+
         m_tokens = int(self.cfg.memory_tokens)
         chunk = int(max(1, self.cfg.chunk_size))
 
         # q: [B, H, M, Dh]
         q = self.latents.unsqueeze(0).expand(b, -1, -1)
+        if q.dtype != proj_dtype:
+            q = q.to(dtype=proj_dtype)
         q = self.q_proj(q).view(b, m_tokens, self.num_heads, self.head_dim).transpose(1, 2)
 
         # streaming softmax accumulators

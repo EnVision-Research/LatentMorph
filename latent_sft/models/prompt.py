@@ -52,13 +52,14 @@ def _sample_text_ids_with_kv(
     temperature: float = 1.0,
 ) -> List[int]:
     """
-    替代 `.generate()`：直接调用内部 forward，显式维护 past_key_values（保留 KV cache）。
-    仅用于 understanding prompt（no_grad），不涉及训练反传。
+    Replacement for `.generate()`: call the internal forward directly and explicitly maintain
+    past_key_values (preserve KV cache).
+    Only used for the understanding prompt (no_grad); no training backprop.
     """
     lm = model.language_model  # LlamaForCausalLM
 
-    # HF: gradient checkpointing + training 会强制 use_cache=False，从而破坏我们手写的 KV 采样循环。
-    # 这里临时切到 eval()，保证 use_cache=True 生效；结束后恢复原 training 状态。
+    # HF: gradient checkpointing + training may force use_cache=False, which breaks our manual KV sampling loop.
+    # Temporarily switch to eval() to ensure use_cache=True takes effect; restore the original training state after.
     prev_training = bool(getattr(lm, "training", False))
     if prev_training:
         lm.eval()

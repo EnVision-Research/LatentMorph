@@ -9,8 +9,8 @@ from janus.models import MultiModalityCausalLM, VLChatProcessor
 from latent_control.controller import LatentController
 from .prompt import build_cfg_prompt_embeds, vec_to_token_ids
 
-# transformers 新版 Cache 兼容：某些版本输出/接受 legacy tuple past_key_values，
-# 但内部 attention 使用 Cache.update()，会在传入 tuple 时直接报错。
+# Compatibility with newer transformers Cache: some versions output/accept legacy tuple past_key_values,
+# but attention uses Cache.update() internally and may error when given a tuple.
 try:
     from transformers.cache_utils import DynamicCache  # type: ignore
 except Exception:  # pragma: no cover
@@ -51,12 +51,12 @@ def _sample_from_logits(logits: torch.Tensor, temperature: float) -> torch.LongT
 
 class LatentMorph(torch.nn.Module):
     """
-    修复版本：正确实现 control token 注入，避免生成崩坏。
+    Fixed version: correctly implements control-token injection to avoid generation collapse.
 
-    核心修复：
-    1. Control tokens 通过 KV cache 注入，不占用输入序列位置
-    2. 修复预测位置索引计算
-    3. 确保梯度传播正确
+    Core fixes:
+    1. Inject control tokens via KV cache without occupying extra input positions
+    2. Fix prediction position indexing
+    3. Ensure correct gradient flow
     """
 
     def __init__(
@@ -81,7 +81,7 @@ class LatentMorph(torch.nn.Module):
         super().__init__()
         self.controller = controller
 
-        # CFG 修复：对 cond/uncond batch 使用不同控制强度（可学习）
+        # CFG fix: use different control strengths for cond/uncond batches (learnable).
         self.control_strength_cond = torch.nn.Parameter(torch.tensor(float(control_strength_cond), dtype=torch.float32))
         self.control_strength_uncond = torch.nn.Parameter(torch.tensor(float(control_strength_uncond), dtype=torch.float32))
 
@@ -95,7 +95,7 @@ class LatentMorph(torch.nn.Module):
         self.image_token_num = int(image_token_num)
         self.stages = int(stages)
         self.part_template = str(part_template)
-        self.use_understanding = True  # 默认开启
+        self.use_understanding = True  # Enabled by default.
         self.understanding_max_tokens = int(understanding_max_tokens)
         self.cfg_weight = float(cfg_weight)
         self.temperature = float(temperature)
@@ -121,11 +121,12 @@ class LatentMorph(torch.nn.Module):
         inj: int | None = None,
     ) -> tuple[torch.LongTensor, int]:
         """
-        推理/可视化用：走“(可选随机)inj + **严格 KV 注入** + 自回归采样”生成图片 token。
+        For inference/visualization: generate image tokens via
+        "(optional random) inj + **strict KV injection** + autoregressive sampling".
 
-        返回：
-        - image_ids: [1, N]（N = image_token_num）
-        - inj: 实际注入点（>32）
+        Returns:
+        - image_ids: [1, N] (N = image_token_num)
+        - inj: actual injection point (>32)
         """
         if seed is not None:
             torch.manual_seed(int(seed))
@@ -142,13 +143,13 @@ class LatentMorph(torch.nn.Module):
         if n_tokens < 35:
             raise ValueError(f"image_token_num too small: {n_tokens} (need >= 35 for inj>32)")
 
-        # device：优先 controller 参数
+        # Device: prefer controller parameters.
         try:
             device = next(controller.parameters()).device
         except StopIteration:
             device = model.device
 
-        # inj：默认随机，按你的要求控制到 [150,450]；也允许外部固定
+        # inj: random by default, constrained to [150,450] as requested; can also be provided externally.
         if inj is None:
             low = 150
             high_excl = min(451, n_tokens)  # torch.randint high is exclusive, and must satisfy inj < n_tokens
@@ -159,7 +160,7 @@ class LatentMorph(torch.nn.Module):
         if inj <= 32 or inj >= n_tokens:
             raise ValueError(f"inj must satisfy 32 < inj < {n_tokens}, got {inj}")
 
-        # reset controller runtime state（兼容两种签名）
+        # Reset controller runtime state (supports two signatures).
         try:
             controller.reset(batch_size=bsz, device=device)
         except Exception:
@@ -185,7 +186,7 @@ class LatentMorph(torch.nn.Module):
             probs = torch.softmax(logits / float(max(1e-6, self.temperature)), dim=-1)
             return torch.multinomial(probs, num_samples=1).to(torch.long)  # [B,1]
 
-        # token0：基于 prompt 最后一个 hidden
+        # token0: based on the last hidden state of the prompt.
         out = _lm_forward_with_optional_position_ids(lm, inputs_embeds=inputs_embeds, use_cache=True, past_key_values=None)
         pkv = _ensure_kv_cache(out.past_key_values)
         next_tok = _sample_from_hidden(out.last_hidden_state[:, -1, :])
@@ -193,9 +194,9 @@ class LatentMorph(torch.nn.Module):
         next_tok2 = torch.cat([next_tok, next_tok], dim=1).reshape(-1)  # [2B]
         inputs_embeds = model.prepare_gen_img_embeds(next_tok2).to(torch.float16).unsqueeze(1)  # [2B,1,D]
 
-        # token1..inj-1：无控制（prefix）
+        # token1..inj-1: no control (prefix).
         for t in range(1, inj):
-            # 当前位置是 image token (t-1) ，对应 RoPE position = prompt_len + (t-1)
+            # The current position consumes image token (t-1), so RoPE position = prompt_len + (t-1).
             pos = torch.full((bsz * 2, 1), prompt_len + (t - 1), device=device, dtype=torch.long)
             out = _lm_forward_with_optional_position_ids(
                 lm, inputs_embeds=inputs_embeds, use_cache=True, past_key_values=pkv, position_ids=pos
@@ -206,14 +207,14 @@ class LatentMorph(torch.nn.Module):
             next_tok2 = torch.cat([next_tok, next_tok], dim=1).reshape(-1)
             inputs_embeds = model.prepare_gen_img_embeds(next_tok2).to(torch.float16).unsqueeze(1)
 
-        # prefix -> long condenser（吃 prefix embeds）
+        # Prefix -> long condenser (consume prefix embeddings).
         ids_prefix = gen_ids[:, :inj].to(device=device, dtype=torch.long)  # [1,inj]
         prefix_emb = model.prepare_gen_img_embeds(ids_prefix.reshape(-1)).to(torch.float16).view(bsz, inj, -1)
 
         ctrl_dtype = next(controller.parameters()).dtype
         long_m_tokens, long_m_vec = controller.long_condenser(prefix_emb.to(ctrl_dtype))
 
-        # understanding latent（推理：no grad）
+        # Understanding latent (inference: no grad).
         rep_k = int(max(8, min(64, self.understanding_max_tokens))) if self.understanding_max_tokens > 0 else 64
         rep_ids = vec_to_token_ids(model, long_m_vec.mean(dim=0), k=rep_k)
         think_prompt_text = (
@@ -227,25 +228,25 @@ class LatentMorph(torch.nn.Module):
         )
         z_vec = controller._think_latent(model=model, prompt_text=think_prompt_text, m_tokens=long_m_tokens.detach())
 
-        # translator + shaper -> ctrl_tokens，然后做“严格 KV 注入”
+        # translator + shaper -> ctrl_tokens, then perform "strict KV injection"
         c_vec = controller.translator(
             z_vec=z_vec.to(ctrl_dtype),
             m_vec=long_m_vec.to(ctrl_dtype),
             p_vec=prompt_vec.to(ctrl_dtype),
         )
         ctrl_tokens = controller.shaper.make_control_tokens_for_cfg(c_vec).to(torch.float16)  # [2B,K,D]
-        # CFG 修复：对 cond/uncond batch 分别缩放控制强度（避免 inplace 切片赋值破坏 autograd）
+        # CFG fix: scale control strength separately for cond/uncond batches (avoid in-place slicing that breaks autograd)
         scale = torch.empty((ctrl_tokens.shape[0], 1, 1), device=ctrl_tokens.device, dtype=ctrl_tokens.dtype)
         scale[0::2] = self.control_strength_cond.to(dtype=ctrl_tokens.dtype)
         scale[1::2] = self.control_strength_uncond.to(dtype=ctrl_tokens.dtype)
         ctrl_tokens = ctrl_tokens * scale
 
-        # 严格 KV 注入：不把 ctrl_tokens 当作额外 token 追加到序列里（那会增长 cache 长度/打乱时间线）。
-        # 这里把 ctrl_tokens 压成一个 delta embedding，加到真实 token(inj-1) 的 embedding 上，
-        # 通过正常 forward 这一 token 来“在不增加序列长度的前提下”修改 KV。
+        # Strict KV injection: do NOT append ctrl_tokens as extra tokens (would extend cache length / disturb timeline).
+        # Instead, compress ctrl_tokens into a delta embedding and add it to the real token(inj-1) embedding,
+        # then forward that token normally to modify KV "without increasing the sequence length".
         ctrl_delta = ctrl_tokens.mean(dim=1, keepdim=True)  # [2B,1,D]
 
-        # 重建到 token(inj-1) 的 cache（简单可靠）
+        # Rebuild cache up to token(inj-1) (simple and reliable).
         pkv = None
         out = _lm_forward_with_optional_position_ids(lm, inputs_embeds=prompt_embeds.to(torch.float16), use_cache=True, past_key_values=None)
         pkv = _ensure_kv_cache(out.past_key_values)
@@ -261,22 +262,23 @@ class LatentMorph(torch.nn.Module):
         tok_inj_m1_2 = torch.cat([tok_inj_m1, tok_inj_m1], dim=1).view(-1)
         emb_inj_m1 = model.prepare_gen_img_embeds(tok_inj_m1_2).to(torch.float16).unsqueeze(1)
         pos_inj_m1 = torch.full((bsz * 2, 1), prompt_len + (inj - 1), device=device, dtype=torch.long)
-        # token(inj-1) 处执行严格 KV 注入：把 ctrl_delta 加到真实 token 的 embedding 上
+        # Apply strict KV injection at token(inj-1): add ctrl_delta to the real token embedding.
         emb_inj_m1 = emb_inj_m1 + ctrl_delta.to(dtype=emb_inj_m1.dtype)
         out = _lm_forward_with_optional_position_ids(
             lm, inputs_embeds=emb_inj_m1, use_cache=True, past_key_values=pkv, position_ids=pos_inj_m1
         )
         pkv = _ensure_kv_cache(out.past_key_values)
 
-        # 用 token(inj-1) 的 hidden 来预测 token inj（标准自回归 predictor）
+        # Use token(inj-1)'s hidden to predict token inj (standard autoregressive predictor).
         next_tok = _sample_from_hidden(out.last_hidden_state[:, -1, :])
         gen_ids[:, inj] = next_tok.squeeze(-1)
 
-        # token inj+1..N-1：控制已进入上下文
+        # token inj+1..N-1: control has entered the context.
         next_tok2 = torch.cat([next_tok, next_tok], dim=1).reshape(-1)
         inputs_embeds = model.prepare_gen_img_embeds(next_tok2).to(torch.float16).unsqueeze(1)
         for t in range(inj + 1, n_tokens):
-            # 当前位置是 image token (t-1)，对应 RoPE position = prompt_len + (t-1)（不因 ctrl_tokens 而偏移）
+            # Current position consumes image token (t-1), so RoPE position = prompt_len + (t-1)
+            # (no shift due to ctrl_tokens).
             pos = torch.full((bsz * 2, 1), prompt_len + (t - 1), device=device, dtype=torch.long)
             out = _lm_forward_with_optional_position_ids(
                 lm, inputs_embeds=inputs_embeds, use_cache=True, past_key_values=pkv, position_ids=pos
@@ -297,10 +299,10 @@ class LatentMorph(torch.nn.Module):
         seed: int | None = None,
     ) -> torch.LongTensor:
         """
-        纯 Janus-Pro baseline：不使用 controller，不做任何 control/KV 注入。
+        Pure Janus-Pro baseline: no controller, no control/KV injection.
 
-        - 输入：base_prompt
-        - 输出：image_ids [1, N]（N = image_token_num）
+        - Input: base_prompt
+        - Output: image_ids [1, N] (N = image_token_num)
         """
         if seed is not None:
             torch.manual_seed(int(seed))
@@ -314,7 +316,7 @@ class LatentMorph(torch.nn.Module):
         bsz = 1
         n_tokens = int(self.image_token_num)
 
-        # device：优先 model
+        # Device: prefer model.device.
         try:
             device = model.device
         except Exception:
@@ -337,13 +339,13 @@ class LatentMorph(torch.nn.Module):
             probs = torch.softmax(logits / float(max(1e-6, self.temperature)), dim=-1)
             return torch.multinomial(probs, num_samples=1).to(torch.long)  # [B,1]
 
-        # token0：基于 prompt 最后一个 hidden
+        # token0: based on the last hidden state of the prompt.
         out = _lm_forward_with_optional_position_ids(lm, inputs_embeds=inputs_embeds, use_cache=True, past_key_values=None)
         pkv = _ensure_kv_cache(out.past_key_values)
         next_tok = _sample_from_hidden(out.last_hidden_state[:, -1, :])  # [B,1]
         gen_ids[:, 0] = next_tok.squeeze(-1)
 
-        # token1..N-1：标准自回归（不注入任何额外 token）
+        # token1..N-1: standard autoregressive sampling (no extra token injection).
         next_tok2 = torch.cat([next_tok, next_tok], dim=1).reshape(-1)  # [2B]
         inputs_embeds = model.prepare_gen_img_embeds(next_tok2).to(torch.float16).unsqueeze(1)  # [2B,1,D]
         for t in range(1, n_tokens):
@@ -368,15 +370,16 @@ class LatentMorph(torch.nn.Module):
         inj: int | None = None,
     ) -> tuple[torch.LongTensor, torch.LongTensor, int]:
         """
-        生成一对可对比样本（控制版 vs 纯 Janus-Pro base），并强制它们在 inj 之前完全对齐：
+        Generate a comparable pair (controlled vs pure Janus-Pro base) and force them to be fully aligned before inj:
 
-        - 两者使用相同的 prompt
-        - token[0 .. inj-1] 完全相同（同一次采样得到的前缀）
-        - 注入分叉点在“consume token inj-1”：
-          - base：不注入，正常 consume token(inj-1) -> 预测 token inj -> 继续生成
-          - control：在 consume token(inj-1) 时做严格 KV 注入（embedding + ctrl_delta），再预测 token inj -> 继续生成
+        - Both use the same prompt
+        - token[0 .. inj-1] are identical (a shared prefix from the same sampling run)
+        - The branch point is at "consume token inj-1":
+          - base: no injection; consume token(inj-1) -> predict token inj -> continue generation
+          - control: perform strict KV injection when consuming token(inj-1) (embedding + ctrl_delta),
+                     then predict token inj -> continue generation
 
-        返回：
+        Returns:
         - ctrl_ids: [1, N]
         - base_ids: [1, N]
         - inj: int
@@ -396,13 +399,13 @@ class LatentMorph(torch.nn.Module):
         if n_tokens < 35:
             raise ValueError(f"image_token_num too small: {n_tokens} (need >= 35 for inj>32)")
 
-        # device：优先 controller 参数
+        # Device: prefer controller parameters.
         try:
             device = next(controller.parameters()).device
         except StopIteration:
             device = model.device
 
-        # inj：默认随机 [150,450)
+        # inj: random by default in [150,450)
         if inj is None:
             low = 150
             high_excl = min(451, n_tokens)
@@ -413,7 +416,7 @@ class LatentMorph(torch.nn.Module):
         if inj <= 32 or inj >= n_tokens:
             raise ValueError(f"inj must satisfy 32 < inj < {n_tokens}, got {inj}")
 
-        # reset controller runtime state（兼容两种签名）
+        # Reset controller runtime state (supports two signatures).
         try:
             controller.reset(batch_size=bsz, device=device)
         except Exception:
@@ -436,7 +439,7 @@ class LatentMorph(torch.nn.Module):
             probs = torch.softmax(logits / float(max(1e-6, self.temperature)), dim=-1)
             return torch.multinomial(probs, num_samples=1).to(torch.long)  # [B,1]
 
-        # === Step A: 一次采样得到“共享前缀 token[0..inj-1]”以及 pkv_before_inj_m1（已 consume 0..inj-2）
+        # === Step A: sample once to obtain the shared prefix token[0..inj-1] and pkv_before_inj_m1 (consumed 0..inj-2)
         pkv_before_inj_m1 = None
         inputs_embeds = prompt_embeds.to(torch.float16)  # [2,T,D]
         out = _lm_forward_with_optional_position_ids(lm, inputs_embeds=inputs_embeds, use_cache=True, past_key_values=None)
@@ -448,7 +451,7 @@ class LatentMorph(torch.nn.Module):
         prefix_ids[:, 0] = tok.squeeze(-1)
         tok2 = torch.cat([tok, tok], dim=1).reshape(-1)  # [2B]
         inputs_embeds = model.prepare_gen_img_embeds(tok2).to(torch.float16).unsqueeze(1)  # [2B,1,D]
-        # token1..inj-1（注意：循环里 consume token(t-1)，预测 token t）
+        # token1..inj-1 (note: the loop consumes token(t-1) and predicts token t)
         for t in range(1, inj):
             pos = torch.full((bsz * 2, 1), prompt_len + (t - 1), device=device, dtype=torch.long)
             out = _lm_forward_with_optional_position_ids(
@@ -460,12 +463,12 @@ class LatentMorph(torch.nn.Module):
             tok2 = torch.cat([tok, tok], dim=1).reshape(-1)
             inputs_embeds = model.prepare_gen_img_embeds(tok2).to(torch.float16).unsqueeze(1)
 
-            # 走到 t==inj-1 时，刚刚 consume 的是 token inj-2，因此 pkv 此刻正好是“已 consume 0..inj-2”
+            # When t==inj-1, we just consumed token inj-2, so pkv is exactly "consumed 0..inj-2" at this moment.
             if t == inj - 1:
                 pkv_before_inj_m1 = pkv
 
         if pkv_before_inj_m1 is None:
-            # inj==1 不可能（inj>32），这里只是防御
+            # inj==1 is impossible (inj>32); this is just a defensive fallback.
             pkv_before_inj_m1 = pkv
 
         tok_inj_m1 = prefix_ids[:, inj - 1 : inj]  # [1,1]
@@ -473,7 +476,7 @@ class LatentMorph(torch.nn.Module):
         emb_inj_m1_plain = model.prepare_gen_img_embeds(tok_inj_m1_2).to(torch.float16).unsqueeze(1)  # [2B,1,D]
         pos_inj_m1 = torch.full((bsz * 2, 1), prompt_len + (inj - 1), device=device, dtype=torch.long)
 
-        # === Step B: base 分支（不注入），从 pkv_before_inj_m1 consume token(inj-1) 开始生成 suffix
+        # === Step B: base branch (no injection), start generating suffix by consuming token(inj-1) from pkv_before_inj_m1
         base_ids = torch.empty((1, n_tokens), device=device, dtype=torch.long)
         base_ids[:, :inj] = prefix_ids
         out_base = _lm_forward_with_optional_position_ids(
@@ -495,8 +498,8 @@ class LatentMorph(torch.nn.Module):
             next_tok2 = torch.cat([next_tok, next_tok], dim=1).reshape(-1)
             inputs_embeds = model.prepare_gen_img_embeds(next_tok2).to(torch.float16).unsqueeze(1)
 
-        # === Step C: control 分支（严格 KV 注入），需要从“相同的 pkv_before_inj_m1”出发
-        # 为避免 cache 对象可能的就地更新/共享引用，这里用 prefix_ids 回放一次到 token inj-2，重建 pkv_before_inj_m1_2
+        # === Step C: control branch (strict KV injection), must start from the same pkv_before_inj_m1
+        # To avoid in-place cache updates/shared references, replay prefix_ids up to token inj-2 to rebuild pkv_before_inj_m1_2.
         out = _lm_forward_with_optional_position_ids(lm, inputs_embeds=prompt_embeds.to(torch.float16), use_cache=True, past_key_values=None)
         pkv = _ensure_kv_cache(out.past_key_values)
         if inj - 1 > 0:
@@ -507,7 +510,7 @@ class LatentMorph(torch.nn.Module):
             pkv = _ensure_kv_cache(out.past_key_values)
         pkv_before_inj_m1_2 = pkv
 
-        # 计算 ctrl_delta（同 generate_image_tokens 逻辑）
+        # Compute ctrl_delta (same logic as generate_image_tokens).
         ids_prefix = prefix_ids.to(device=device, dtype=torch.long)  # [1,inj]
         prefix_emb = model.prepare_gen_img_embeds(ids_prefix.reshape(-1)).to(torch.float16).view(bsz, inj, -1)
         ctrl_dtype = next(controller.parameters()).dtype
@@ -561,7 +564,7 @@ class LatentMorph(torch.nn.Module):
     @torch.inference_mode()
     def decode_image_tokens_to_pil(self, image_ids: torch.LongTensor):
         """
-        把 image token ids decode 成 PIL.Image（列表）。
+        Decode image token ids into PIL.Image objects (a list).
         """
         model = self.model
         bsz = int(image_ids.shape[0])
@@ -586,12 +589,12 @@ class LatentMorph(torch.nn.Module):
 
     def forward(self, *, base_prompt: str, gt_image_ids: torch.LongTensor) -> torch.Tensor:
         """
-        修复版本：正确的 teacher-forcing + control injection
+        Fixed version: correct teacher-forcing + control injection
 
-        策略：
-        1. 正常 teacher-forcing 输入：prompt + 所有 GT image tokens
-        2. 在 inj 位置前通过 KV cache 注入 control tokens
-        3. inj 之后的预测基于注入后的状态
+        Strategy:
+        1. Standard teacher-forcing input: prompt + all GT image tokens
+        2. Inject control tokens via KV cache before the inj position
+        3. Predictions after inj are conditioned on the injected state
         """
         model = self.model
         tokenizer = self.tokenizer
@@ -606,20 +609,20 @@ class LatentMorph(torch.nn.Module):
         if int(gt_image_ids.shape[1]) < n_tokens:
             raise ValueError(f"gt_image_ids too short: got {int(gt_image_ids.shape[1])}, need >= {n_tokens}")
 
-        # 按你的要求：inj 随机控制到 [150,450]（并裁剪到 < n_tokens）
+        # As requested: random inj constrained to [150,450] (and clipped to < n_tokens).
         low = 150
         high_excl = min(451, n_tokens)  # high is exclusive
         if high_excl <= low:
             raise ValueError(f"image_token_num too small for inj in [150,450): n_tokens={n_tokens}")
         inj = int(torch.randint(low=low, high=high_excl, size=(), device=device).item())
 
-        # 重置 controller state
+        # Reset controller state.
         try:
             controller.reset(batch_size=bsz, device=device)
         except Exception:
             pass
 
-        # === 构建输入 ===
+        # === Build inputs ===
 
         # 1. Prompt embeds
         with torch.no_grad():
@@ -627,23 +630,23 @@ class LatentMorph(torch.nn.Module):
             prompt_embeds, prompt_vec = build_cfg_prompt_embeds(model, processor, tokenizer, gen_prompt_ids, bsz, device)
         prompt_len = int(prompt_embeds.shape[1])
 
-        # 2. GT image token embeds (完整序列)
+        # 2. GT image token embeddings (full sequence)
         ids_full = gt_image_ids[:, :n_tokens].to(device=device, dtype=torch.long)  # [B,N]
         ids_full_cfg = torch.stack([ids_full, ids_full], dim=1).view(bsz * 2, -1)  # [2B,N]
         with torch.no_grad():
             full_emb = model.prepare_gen_img_embeds(ids_full_cfg.reshape(-1)).to(torch.float16).view(bsz * 2, n_tokens, -1)  # [2B,N,D]
 
-        # 3. 完整输入序列 (用于 teacher-forcing)
+        # 3. Full input sequence (for teacher-forcing)
         input_emb = torch.cat([prompt_embeds.to(torch.float16), full_emb], dim=1)  # [2B, prompt_len + N, D]
 
-        # === 计算控制信号 ===
+        # === Compute control signal ===
 
-        # 使用前 inj 个 tokens 计算控制 (与生成时一致)
+        # Compute control using the first inj tokens (same as generation).
         ids_prefix = gt_image_ids[:, :inj].to(device=device, dtype=torch.long)  # [B,inj]
         with torch.no_grad():
             prefix_emb = model.prepare_gen_img_embeds(ids_prefix.reshape(-1)).to(torch.float16).view(bsz, inj, -1)
 
-        # LongCondenser (可训练)
+        # LongCondenser (trainable)
         ctrl_dtype = next(controller.parameters()).dtype
         long_m_tokens, long_m_vec = controller.long_condenser(prefix_emb.to(ctrl_dtype))
 
@@ -660,40 +663,40 @@ class LatentMorph(torch.nn.Module):
                 "The continuation should correct any potential deviation and preserve semantic, structural, and visual consistency.\n\n"
                 "Output only the continuation prompt for generating the remaining image tokens."
             )
-            # 重要修复：不 detach，确保梯度传播
+            # Important fix: do not detach, so gradients can flow.
             z_vec = controller._think_latent(model=model, prompt_text=think_prompt_text, m_tokens=long_m_tokens)
 
-        # Translator + Shaper (可训练)
+        # Translator + Shaper (trainable)
         c_vec = controller.translator(
             z_vec=z_vec.to(ctrl_dtype),
             m_vec=long_m_vec.to(ctrl_dtype),
             p_vec=prompt_vec.to(ctrl_dtype),
         )
         ctrl_tokens = controller.shaper.make_control_tokens_for_cfg(c_vec).to(torch.float16)  # [2B,K,D]
-        # CFG 修复：对 cond/uncond batch 分别缩放控制强度（避免 inplace 切片赋值破坏 autograd）
+        # CFG fix: scale control strength separately for cond/uncond batches (avoid in-place slicing that breaks autograd)
         scale = torch.empty((ctrl_tokens.shape[0], 1, 1), device=ctrl_tokens.device, dtype=ctrl_tokens.dtype)
         scale[0::2] = self.control_strength_cond.to(dtype=ctrl_tokens.dtype)
         scale[1::2] = self.control_strength_uncond.to(dtype=ctrl_tokens.dtype)
         ctrl_tokens = ctrl_tokens * scale
         k_ctrl = int(ctrl_tokens.shape[1])
 
-        # === 关键修复：正确的并行 Forward ===
+        # === Key fix: correct parallel forward ===
 
-        # 策略：分两步 forward
-        # Step 1: Forward 到 inj 位置，建立 KV cache
-        # Step 2: 注入 control tokens，然后继续 forward
+        # Strategy: two-stage forward
+        # Step 1: forward up to inj to build KV cache
+        # Step 2: inject control tokens, then continue forward
 
         lm = model.language_model
 
-        # Step 1: Forward 到 inj 位置
+        # Step 1: forward up to inj
         input_up_to_inj = input_emb[:, :prompt_len + inj, :]  # [2B, prompt_len + inj, D]
         with torch.no_grad():
             out_prefix = _lm_forward_with_optional_position_ids(lm.model, inputs_embeds=input_up_to_inj, use_cache=True, past_key_values=None)
             past_kv = _ensure_kv_cache(out_prefix.past_key_values)
 
-        # Step 2: 严格 KV 注入（不追加 ctrl_tokens，不增加 cache 长度）
-        # 做法：把 ctrl_tokens 压成 delta embedding，加到真实 token(inj-1) 的 embedding 上，
-        # 然后只 forward 这一 token 来产生“被控制的” KV（序列长度保持不变）。
+        # Step 2: strict KV injection (do not append ctrl_tokens; do not increase cache length)
+        # Method: compress ctrl_tokens into a delta embedding, add it to the real token(inj-1) embedding,
+        # then forward only that token to produce "controlled" KV (sequence length unchanged).
         ctrl_delta = ctrl_tokens.mean(dim=1, keepdim=True)  # [2B,1,D]
         emb_inj_m1 = full_emb[:, inj - 1 : inj, :] + ctrl_delta.to(dtype=full_emb.dtype)  # [2B,1,D]
         pos_inj_m1 = torch.full((bsz * 2, 1), prompt_len + (inj - 1), device=device, dtype=torch.long)
@@ -705,11 +708,11 @@ class LatentMorph(torch.nn.Module):
             position_ids=pos_inj_m1,
         )
         past_kv_injected = _ensure_kv_cache(out_inj_m1.past_key_values)
-        h_inj_m1 = out_inj_m1.last_hidden_state  # [2B,1,D]，用于预测 token inj
+        h_inj_m1 = out_inj_m1.last_hidden_state  # [2B,1,D], used to predict token inj
 
-        # Step 3: 继续 forward inj 之后的 tokens
+        # Step 3: continue forward after inj
         input_after_inj = input_emb[:, prompt_len + inj:, :]  # [2B, N-inj, D]
-        # suffix 的 position_ids 必须保持原始时间线：prompt_len+inj .. prompt_len+N-1
+        # suffix position_ids must keep the original timeline: prompt_len+inj .. prompt_len+N-1
         pos_suffix = torch.arange(prompt_len + inj, prompt_len + n_tokens, device=device, dtype=torch.long)
         pos_suffix = pos_suffix.unsqueeze(0).expand(bsz * 2, -1)  # [2B, N-inj]
         out_full = _lm_forward_with_optional_position_ids(
@@ -720,16 +723,16 @@ class LatentMorph(torch.nn.Module):
             position_ids=pos_suffix,
         )
 
-        # 组合必要的 hidden states
-        h_prefix = out_prefix.last_hidden_state  # [2B, prompt_len + inj, D]（无 grad）
-        h_suffix = out_full.last_hidden_state   # [2B, N-inj, D]（有 grad，依赖注入后的 KV）
+        # Combine required hidden states.
+        h_prefix = out_prefix.last_hidden_state  # [2B, prompt_len + inj, D] (no grad)
+        h_suffix = out_full.last_hidden_state   # [2B, N-inj, D] (has grad; depends on injected KV)
 
-        # === predictor hidden（不把 control token 插到 token 序列里）===
-        # 目标 token t 的 predictor hidden：
-        # - t=0: prompt 的最后一个 hidden
-        # - 1 <= t < inj: image token (t-1) 的 hidden（来自 prefix）
-        # - t=inj: 使用 token(inj-1) 的 hidden（h_inj_m1）
-        # - t > inj: image token (t-1) 的 hidden（来自 suffix）
+        # === Predictor hidden (do not insert control tokens into the token sequence) ===
+        # Predictor hidden for target token t:
+        # - t=0: last hidden of the prompt
+        # - 1 <= t < inj: hidden of image token (t-1) (from prefix)
+        # - t=inj: hidden of token(inj-1) (h_inj_m1)
+        # - t > inj: hidden of image token (t-1) (from suffix)
         pred_h = torch.empty((h_suffix.shape[0], n_tokens, h_suffix.shape[2]), device=device, dtype=h_suffix.dtype)
         pred_h[:, 0:1, :] = h_prefix[:, prompt_len - 1 : prompt_len, :].to(dtype=pred_h.dtype)
         if inj > 1:
@@ -739,7 +742,7 @@ class LatentMorph(torch.nn.Module):
         if tail > 0:
             pred_h[:, inj + 1 :, :] = h_suffix[:, :tail, :]
 
-        # === Loss 计算 ===
+        # === Loss ===
         logits2_all = model.gen_head(pred_h.to(torch.float16))  # [2B, N, V]
         cond_all, uncond_all = logits2_all[0::2], logits2_all[1::2]  # [B, N, V]
         logits_all = uncond_all + float(self.cfg_weight) * (cond_all - uncond_all)  # [B, N, V]

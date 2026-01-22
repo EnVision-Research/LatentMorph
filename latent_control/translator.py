@@ -10,21 +10,21 @@ import torch.nn as nn
 @dataclass
 class TranslatorConfig:
     hidden_ratio: float = 2.0
-    # 输出控制向量的幅度限制（tanh gate）
+    # Limit the control-vector magnitude (tanh gate).
     max_scale: float = 1.0
 
 
 class Translator(nn.Module):
     """
-    Translator: Think -> Gen 的跨模态控制桥。
+    Translator: a cross-modal control bridge from Think -> Gen.
 
-    输入:
-      - z_vec: [B, D]  (think mode 的 latent thought pooled vector)
+    Inputs:
+      - z_vec: [B, D]  (think-mode latent thought pooled vector)
       - m_vec: [B, D]  (visual memory pooled vector)
       - p_vec: [B, D]  (prompt embedding pooled vector)
 
-    输出:
-      - c_vec: [B, D]  (控制向量，交给 Shaper 做“安全注入”)
+    Output:
+      - c_vec: [B, D]  (control vector; passed to Shaper for "safe injection")
     """
 
     def __init__(self, d_model: int, cfg: TranslatorConfig):

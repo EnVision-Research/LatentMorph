@@ -7,7 +7,13 @@ import torch
 import torch.nn as nn
 
 from .condenser import AttentionCondenser, CondenserConfig
-from .trigger import TriggerConfig, TriggerState, cosine_sim, entropy_from_probs, should_trigger
+from .trigger import (
+    TriggerConfig,
+    TriggerState,
+    build_trigger_features,
+    cosine_sim,
+    entropy_from_probs,
+)
 from .translator import Translator, TranslatorConfig
 from .shaper import ControlTokenShaper, ShaperConfig
 from .long_condenser import LongAttentionCondenser, LongCondenserConfig
@@ -18,7 +24,7 @@ class LatentControllerConfig:
     enabled: bool = True
 
     # buffer/window
-    img_hidden_window: int = 32  # 保存最近多少步 image-token hidden states 给 Condenser 用
+    img_hidden_window: int = 32  # Keep the last N image-token hidden states for the Condenser.
 
     # trigger
     trigger: TriggerConfig = field(default_factory=TriggerConfig)
@@ -36,8 +42,8 @@ class LatentControllerConfig:
 
 class LatentController(nn.Module):
     """
-    把 Condenser / Trigger / Translator / Shaper 串起来，并负责把 control tokens
-    “插入”到 KV cache（无回滚：仅额外 forward 一次 control prefix）。
+    Wire up Condenser / Trigger / Translator / Shaper, and inject control tokens into the KV cache.
+    This injection is non-reversible: we only do one extra forward pass for the control prefix.
     """
 
     def __init__(self, d_model: int, tokenizer, cfg: LatentControllerConfig):
@@ -46,17 +52,21 @@ class LatentController(nn.Module):
         self.tokenizer = tokenizer
         self.d_model = d_model
 
-        # 子模块 dtype 由外部 trainer 决定（训练通常用 fp32 params + fp16 embeds）
+        # Sub-module dtype is decided by the external trainer
+        # (training often uses fp32 params + fp16 embeddings).
         self.condenser = AttentionCondenser(d_model, cfg.condenser)
         self.long_condenser = LongAttentionCondenser(d_model, cfg.long_condenser)
         self.translator = Translator(d_model, cfg.translator)
         self.shaper = ControlTokenShaper(d_model, cfg.shaper)
 
-        # 运行态 state（每张图/每个 stage reset）
+        # Runtime state (reset per image / per stage).
         self._trigger_state: Optional[TriggerState] = None
         self._img_h_buf: Optional[torch.Tensor] = None  # [B, W, D]
         self._img_h_ptr: int = 0
         self._triggers_used: int = 0
+        # Logic: if an injection happens at a check step, we skip the next check step
+        # (but still update buffers every step). In batched mode this is tracked per-sample.
+        self._skip_next_check: Optional[torch.Tensor] = None  # [B] int32 (0/1)
 
     def reset(self, batch_size: int, device: torch.device):
         w = int(self.cfg.img_hidden_window)
@@ -64,25 +74,42 @@ class LatentController(nn.Module):
         self._img_h_ptr = 0
         self._trigger_state = TriggerState(batch_size, self.cfg.trigger.window, device=device)
         self._triggers_used = 0
-        # 重要：长序列缓存必须随每张图/每个 batch reset，否则会把上一轮计算图带进来，
-        # 触发 “Trying to backward through the graph a second time”.
+        self._skip_next_check = torch.zeros((batch_size,), device=device, dtype=torch.int32)
+        # Important: long-sequence caches must be reset per image / per batch, otherwise we may
+        # carry over a previous computation graph and trigger:
+        # "Trying to backward through the graph a second time".
         self._img_h_long_list = []
         self._img_h_long_b = int(batch_size)
         self._img_h_long_d = int(self.d_model)
         self._img_h_long_device = device
 
+    def mark_injected(self, *, mask: torch.Tensor):
+        """
+        Called by rollout after an injection is actually applied:
+        - For the masked samples, we will not return obs at the next check step (skip one check).
+        mask: [B] bool/0-1
+        """
+        if self._skip_next_check is None:
+            raise RuntimeError("LatentController not reset before mark_injected()")
+        if mask.dim() != 1:
+            raise ValueError(f"mask must be [B], got {tuple(mask.shape)}")
+        m = (mask > 0.5) if mask.is_floating_point() else mask.to(torch.bool)
+        if bool(m.any()):
+            self._skip_next_check[m] = 1
+
     def _push_img_hidden(self, h_img_last: torch.Tensor) -> torch.Tensor:
         """
         h_img_last: [B, D]
-        返回用于 Condenser 的序列: [B, S, D] (S<=W)
+        Returns the sequence for the Condenser: [B, S, D] (S<=W)
         """
         assert self._img_h_buf is not None
         b, w, d = self._img_h_buf.shape
-        # 训练时 LM 冻结：不需要把 h_img_last 的图跨步/跨 batch 保留下来，detach 以免图被意外复用并省显存
+        # LM is frozen during training: detach to avoid accidentally reusing graphs across steps/batches,
+        # and to save memory.
         self._img_h_buf[:, self._img_h_ptr] = h_img_last.detach().to(dtype=torch.float16)
         self._img_h_ptr = (self._img_h_ptr + 1) % w
 
-        # 以时间顺序展开 buffer（最近的在最后）
+        # Unroll the circular buffer in chronological order (latest at the end).
         # idx: [ptr, ptr+1, ..., w-1, 0, 1, ..., ptr-1]
         idx = torch.arange(w, device=h_img_last.device)
         idx = (idx + self._img_h_ptr) % w
@@ -94,7 +121,7 @@ class LatentController(nn.Module):
         if h_img_last.dim() != 2:
             raise ValueError(f"h_img_last must be [B,D], got {tuple(h_img_last.shape)}")
 
-        # lazy init / safety re-init (batch size/device 变化时重置历史)
+        # Lazy init / safety re-init (reset history when batch size/device changes).
         lst = getattr(self, "_img_h_long_list", None)
         if lst is None:
             self._img_h_long_list = []
@@ -107,13 +134,13 @@ class LatentController(nn.Module):
                 or int(h_img_last.shape[1]) != getattr(self, "_img_h_long_d", int(h_img_last.shape[1]))
                 or h_img_last.device != getattr(self, "_img_h_long_device", h_img_last.device)
             ):
-                # batch size/device 变化时重置历史
+                # Reset history when batch size/device changes.
                 self._img_h_long_list = []
                 self._img_h_long_b = int(h_img_last.shape[0])
                 self._img_h_long_d = int(h_img_last.shape[1])
                 self._img_h_long_device = h_img_last.device
 
-        # 同理：长期缓存 detach，避免跨步/跨 batch 把旧计算图拼回来
+        # Likewise: detach long-term cache to avoid stitching old graphs across steps/batches.
         self._img_h_long_list.append(h_img_last.detach().to(dtype=torch.float16).unsqueeze(1))  # [B,1,D]
         return torch.cat(self._img_h_long_list, dim=1)
 
@@ -124,8 +151,8 @@ class LatentController(nn.Module):
         m_tokens: torch.Tensor,  # [B, M, D]
     ) -> torch.Tensor:
         """
-        使用 language model 做一次短 forward,拿 pooled hidden 作为 z_vec。
-        不输出可读 CoT,只保留 hidden。
+        Run a short language-model forward pass and use pooled hidden states as z_vec.
+        We do not output readable CoT; we only keep hidden states.
         """
         # tokenize prompt summary
         ids = self.tokenizer.encode(prompt_text)
@@ -142,133 +169,85 @@ class LatentController(nn.Module):
         z_vec = h.mean(dim=1)
         return z_vec
 
-    def maybe_inject(
-        self,
-        model,  # MultiModalityCausalLM
-        past_key_values,
-        step_idx: int,
-        prompt_vec: torch.Tensor,  # [B, D]
-        h_img_last_cond: torch.Tensor,  # [B, D]
-        next_token_probs: torch.Tensor,  # [B, V] (通常是 CFG 后的 probs)
-        prompt_text_for_think: str,
-    ):
-        """
-        在生成循环中调用。
-        - 更新视觉记忆 (Condenser)
-        - 计算 trigger
-        - 触发则：think -> translate -> shape -> prefix injection (update KV)
-        返回: (new_past_key_values, did_inject: bool)
-        """
-        if not self.cfg.enabled:
-            return past_key_values, False
-
-        if self._img_h_buf is None or self._trigger_state is None:
-            self.reset(batch_size=h_img_last_cond.shape[0], device=h_img_last_cond.device)
-
-        img_seq = self._push_img_hidden(h_img_last_cond)  # [B,W,D]
-        long_img = self._push_img_long_hidden(h_img_last_cond)
-
-        # 预算 & 频率控制
-        if self._triggers_used >= self.cfg.max_triggers_per_image:
-            return past_key_values, False
-        if (step_idx + 1) % self.cfg.trigger.check_every != 0:
-            return past_key_values, False
-        # print("pass mod : ",step_idx)
-        # print("h len : ",h_img_last_cond.shape)
-
-        # import pdb; pdb.set_trace()
-
-        # Condenser
-        m_tokens, m_vec = self.condenser(img_seq)
-        
-        # import pdb; pdb.set_trace()
-
-        # Trigger features
-        s_t = cosine_sim(m_vec, prompt_vec)  # [B]
-        u_t = entropy_from_probs(next_token_probs)  # [B]
-        delta_s, var_s = self._trigger_state.update(s_t)
-        # print(s_t,u_t,delta_s,var_s)
-        trig = should_trigger(self.cfg.trigger, s_t=s_t, delta_s=delta_s, var_s=var_s, u_t=u_t)
-
-        # import pdb; pdb.set_trace()
-
-        # if not bool(trig.any()):
-        #     return past_key_values, False
-        # train time : trigger always True
-
-        # BEGINING THINKING ---------
-        # LONG CONDENSER
-        # print("LONG ",long_img.shape)
-        long_m_tokens, long_m_vec = self.long_condenser(long_img)
-
-        # Think -> Translator -> Shaper
-        # 训练时：Janus-Pro 通常冻结，我们不需要沿着 LM 的 think 路径反传到 m_tokens；
-        # 否则会让显存暴涨（需要保存一整段 LLM activations 用于输入梯度）。
-        with torch.no_grad():
-            z_vec = self._think_latent(
-                model=model,
-                prompt_text=prompt_text_for_think,
-                m_tokens=long_m_tokens.detach(),
-            )
-        c_vec = self.translator(z_vec=z_vec, m_vec=long_m_vec, p_vec=prompt_vec)  # [B,D]
-        ctrl_tokens = self.shaper.make_control_tokens_for_cfg(c_vec)  # [2B,K,D]
-
-
-        # import pdb; pdb.set_trace()
-
-        # Prefix injection: 额外 forward 一次，把 control tokens 写进 KV
-        inj_out = model.language_model.model(
-            inputs_embeds=ctrl_tokens.to(torch.float16),
-            use_cache=True,
-            past_key_values=past_key_values,
-        )
-        self._triggers_used += 1
-        return inj_out.past_key_values, True
-
-    def maybe_control_tokens(
+    def observe_trigger_inputs(
         self,
         *,
-        model,  # MultiModalityCausalLM
         step_idx: int,
         prompt_vec: torch.Tensor,  # [B,D]
         h_img_last_cond: torch.Tensor,  # [B,D]
         next_token_probs: torch.Tensor,  # [B,V]
-        prompt_text_for_think: str,
-    ):
+    ) -> Optional[dict]:
         """
-        teacher-forcing 并行 forward 用：
-        - 不修改 KV cache
-        - 只根据当前 step 的信息，决定是否触发，并返回需要插入的 control token embeddings（CFG batch: [2B,K,D]）
+        For RL rollouts: observation only (no injection; does not modify KV cache).
+
+        Returning None means:
+        - control disabled
+        - trigger budget reached
+        - not a check step (check_every)
+
+        Otherwise returns:
+          {
+            "x_t": [B,4],
+            "s_t": [B], "delta_s":[B], "var_s":[B], "u_t":[B],
+            "m_vec": [B,D],
+            "long_img": [B,S,D]  (for later inject_from_long_img)
+          }
         """
         if not self.cfg.enabled:
-            return None, False
+            return None
 
         if self._img_h_buf is None or self._trigger_state is None:
             self.reset(batch_size=h_img_last_cond.shape[0], device=h_img_last_cond.device)
 
-        _ = self._push_img_hidden(h_img_last_cond)  # 更新短期 buffer
-        long_img = self._push_img_long_hidden(h_img_last_cond)
+        # Update buffers every step (both short/long), but only return obs on check steps.
+        img_seq = self._push_img_hidden(h_img_last_cond)  # [B,W,D]
+        long_img = self._push_img_long_hidden(h_img_last_cond)  # [B,S,D]
 
         if self._triggers_used >= self.cfg.max_triggers_per_image:
-            return None, False
-        if (step_idx + 1) % self.cfg.trigger.check_every != 0:
-            return None, False
+            return None
+        # Note: step_idx here is t-1 (the position consuming token t-1);
+        # token_idx=t=step_idx+1.
+        token_idx = int(step_idx) + 1
+        check_every = int(self.cfg.trigger.check_every)
+        if check_every <= 0:
+            raise ValueError(f"trigger.check_every must be > 0, got {check_every}")
 
-        # Condenser / LongCondenser
-        #（训练对齐当前实现：trigger 判定目前等价于“按频率触发”，不额外 gate）
-        _, m_vec = self.condenser(self._img_h_buf)  # [B,D]（仅用于对齐接口；不用也可以）
-        long_m_tokens, long_m_vec = self.long_condenser(long_img)
+        # Keep the window constraint: for the first `window` tokens we only accumulate buffers,
+        # and do not trigger (stats are too short otherwise).
+        if token_idx <= int(self.cfg.trigger.window):
+            return None
+        # Only check at check steps (e.g., check_every=64 -> 64/128/192...).
+        if (token_idx % check_every) != 0:
+            return None
+        # Key: skip the first check step (e.g., check_every=64 -> do not check at token_idx=64; start from 128).
+        # Nothing is hard-coded; everything depends on check_every.
+        if token_idx < (2 * check_every):
+            return None
+        # If injection happened at the previous check step, skip the next check step (per-sample; only once).
+        check_mask = torch.ones((h_img_last_cond.shape[0],), device=h_img_last_cond.device, dtype=torch.bool)
+        if self._skip_next_check is not None:
+            skip = self._skip_next_check.to(torch.bool)
+            if bool(skip.any()):
+                check_mask = check_mask & (~skip)
+                # Reset: only skip once.
+                self._skip_next_check[skip] = 0
+        if not bool(check_mask.any()):
+            return None
 
-        with torch.no_grad():
-            z_vec = self._think_latent(
-                model=model,
-                prompt_text=prompt_text_for_think,
-                m_tokens=long_m_tokens.detach(),
-            )
-
-        c_vec = self.translator(z_vec=z_vec, m_vec=long_m_vec, p_vec=prompt_vec)
-        ctrl_tokens = self.shaper.make_control_tokens_for_cfg(c_vec)  # [2B,K,D]
-        self._triggers_used += 1
-        return ctrl_tokens, True
+        _m_tokens, m_vec = self.condenser(img_seq)
+        s_t = cosine_sim(m_vec, prompt_vec)
+        u_t = entropy_from_probs(next_token_probs)
+        delta_s, var_s = self._trigger_state.update(s_t)
+        x_t = build_trigger_features(s_t=s_t, delta_s=delta_s, var_s=var_s, u_t=u_t)
+        return {
+            "x_t": x_t,
+            "s_t": s_t,
+            "delta_s": delta_s,
+            "var_s": var_s,
+            "u_t": u_t,
+            "m_vec": m_vec,
+            "long_img": long_img,
+            "check_mask": check_mask,
+        }
 
 

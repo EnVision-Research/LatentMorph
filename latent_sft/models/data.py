@@ -14,7 +14,7 @@ from PIL import Image
 from torch.utils.data import DataLoader, Dataset, IterableDataset
 from torchvision import transforms
 
-# 默认缓存目录放在 LatentMorph 外（同级目录），可用环境变量覆盖
+# By default, place the cache directory outside LatentMorph (sibling directory); can be overridden via env var.
 _DEFAULT_CACHE_DIR = os.environ.get(
     "TWIG_IMAGE_CACHE_DIR",
     os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "twig_image_cache")),
@@ -106,9 +106,9 @@ class ParquetImageCaptionIterable(IterableDataset):
 class ParquetImageCaptionInMemory(Dataset):
     """
     Map-style dataset:
-    - 读取所有 parquet 的指定列到内存（不提前 decode 图片）
-    - __getitem__ 时再 decode + transforms
-    这样可以配合 DistributedSampler 做“均匀分片 + 每条样本只跑一次”。
+    - Load selected columns from all parquet files into memory (do not decode images upfront)
+    - Decode + transforms happen in __getitem__
+    This works well with DistributedSampler for "even sharding + each sample processed once".
     """
 
     def __init__(
@@ -142,8 +142,9 @@ class ParquetImageCaptionInMemory(Dataset):
         )
 
         # materialize required columns into python lists
-        # 注意：不要在这里 decode 校验（会导致每个 rank 启动时扫全量数据，极慢）。
-        # 解码失败在 __getitem__ 内返回 dummy image，保证不会出现 batch=None，避免 DDP collective 不一致。
+        # NOTE: do not validate/decode here (each rank would scan the full dataset on startup; very slow).
+        # If decoding fails, __getitem__ returns a dummy image so batches never become None,
+        # avoiding DDP collective mismatches.
         dataset = ds.dataset(self.files, format="parquet")
         cols = [self.image_key, self.caption_key]
         scanner = dataset.scanner(columns=cols, batch_size=self.batch_rows)
@@ -181,19 +182,19 @@ class ParquetImageCaptionInMemory(Dataset):
             pil = decode_parquet_image(img_cell)
             return self.tfm(pil), cap
         except Exception:
-            # 解码失败：返回 dummy 图（与 Normalize 后范围一致：-1）
+            # Decode failure: return a dummy image (matches the Normalize output range: -1).
             dummy = torch.full((3, self._img_size, self._img_size), -1.0, dtype=torch.float32)
             return dummy, cap
 
 def resolve_train_files(cfg: dict) -> List[str]:
     td = cfg.get("train_data", None)
     if not isinstance(td, dict):
-        raise ValueError("config.json 中缺少 train_data 配置。")
+        raise ValueError("Missing `train_data` in config.json.")
 
     root_dir = str(td.get("root_dir", "")).strip()
     sources = td.get("sources", None)
     if not root_dir or not isinstance(sources, list) or not sources:
-        raise ValueError("config.json 的 train_data 必须包含 root_dir 和 sources 列表。")
+        raise ValueError("config.json train_data must include `root_dir` and a non-empty `sources` list.")
 
     out: List[str] = []
     missing: List[str] = []
@@ -214,10 +215,12 @@ def resolve_train_files(cfg: dict) -> List[str]:
                 missing.append(p)
 
     if not out:
-        raise FileNotFoundError("train_data 没有解析出任何 parquet 文件（请检查 root_dir/模板/范围）。")
+        raise FileNotFoundError("train_data did not resolve any parquet files (check root_dir/template/range).")
     if missing:
         preview = "\n".join(missing[:20])
-        raise FileNotFoundError(f"train_data 中有文件不存在（前20个）：\n{preview}\n... total missing={len(missing)}")
+        raise FileNotFoundError(
+            f"Some files in train_data do not exist (first 20):\n{preview}\n... total missing={len(missing)}"
+        )
     return out
 
 
@@ -247,8 +250,8 @@ def build_dataloader(
             max_samples=int(max_samples),
         )
 
-        # DDP 下必须保证每个 rank 迭代步数一致，否则 collective(all_reduce) 会 timeout。
-        # 这里用 DistributedSampler（shuffle=False）做均匀分片；为对齐长度会最多 padding <world_size 条样本。
+        # Under DDP, each rank must have the same number of iterations; otherwise collectives (all_reduce) may time out.
+        # We use DistributedSampler (shuffle=False) for even sharding; to align lengths it may pad up to <world_size samples.
         sampler = None
         if ddp and int(world_size) > 1:
             from torch.utils.data.distributed import DistributedSampler

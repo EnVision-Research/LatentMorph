@@ -4,7 +4,7 @@ import argparse
 import os
 import sys
 
-# 保证无论从哪个工作目录启动都能找到模块
+# Ensure we can import modules regardless of the current working directory.
 _THIS_DIR = os.path.dirname(__file__)
 _REPO_ROOT = os.path.abspath(os.path.join(_THIS_DIR, ".."))
 for _p in (_THIS_DIR, _REPO_ROOT):
@@ -14,8 +14,8 @@ for _p in (_THIS_DIR, _REPO_ROOT):
 
 def _maybe_silence_non_rank0():
     """
-    torchrun 多进程下，在最早阶段静默非 rank0 的 stdout，
-    仅保留 stderr 到文件，便于排查。
+    Under torchrun multi-process, silence non-rank0 stdout at the earliest stage,
+    and only keep stderr in per-rank files for easier debugging.
     """
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     if world_size <= 1:
@@ -58,28 +58,29 @@ def parse_args():
     ap.add_argument(
         "--out_dir",
         type=str,
-        # 默认把 checkpoints 放到 TwiGpipline 外面（减少 repo 体积/压力）
+        # By default, place checkpoints outside TwiGpipline (reduce repo size/pressure).
         default=os.path.abspath(os.path.join(_REPO_ROOT, "..", "checkpoints_control_image_loss2")),
-        help="为空则默认写到 repo_root/checkpoints_control_image_loss2",
+        help="If empty, defaults to repo_root/checkpoints_control_image_loss2",
     )
     ap.add_argument(
         "--device",
         type=str,
         default="cuda",
-        help="设备选择：默认 cuda；无 GPU 时自动回退到 cpu",
+        help="Device selection: default cuda; automatically falls back to cpu when no GPU is available",
     )
     ap.add_argument(
         "--visible_gpus",
         type=str,
         default="",
-        help="可选：在脚本内部设置 CUDA_VISIBLE_DEVICES，例如 '0,1,2,3'。建议直接在命令行环境变量里设置。",
+        help="Optional: set CUDA_VISIBLE_DEVICES inside the script, e.g. '0,1,2,3'. "
+        "Recommended to set it as a shell environment variable instead.",
     )
     return ap.parse_args()
 
 
 def main():
     args = parse_args()
-    # 训练轮数相关参数不再暴露给命令行，固定为“只跑一遍数据”
+    # Epoch-related args are not exposed; we run exactly one pass over the dataset.
     args.max_epochs = 1
     args.max_batches_per_epoch = 0
 
