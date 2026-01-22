@@ -1,60 +1,50 @@
+<h2 align="center"> Show, Don’t Tell: Morphing Latent Reasoning into Image Generation</h2>
+<div align="center">
 
+_**[Harold Haodong Chen](https://haroldchen19.github.io/)<sup>1,2*</sup>, [Xinxiang Yin](https://scholar.google.com/citations?user=fWBpAoMAAAAJ&hl=en)<sup>3*</sup>,<br>[Wen-Jie Shu](https://wenjieshu.github.io/)<sup>2</sup>, [Hongfei Zhang](https://github.com/EnVision-Research/TiViBench)<sup>1</sup>, [Zixin Zhang](https://scholar.google.com/citations?hl=en&user=BbZ0mwoAAAAJ)<sup>1,2</sup>, [Chenfei Liao](https://chenfei-liao.github.io/)<sup>1</sup>, [Litao Guo](https://scholar.google.com/citations?user=efdm760AAAAJ&hl=en)<sup>1,2</sup>,
+<br>
+[Qifeng Chen](https://cqf.io/)<sup>2†</sup>, [Ying-Cong Chen](https://www.yingcong.me/)<sup>1,2†</sup>**_
+<br><br>
+<sup>*</sup>Equal Contribution; <sup>†</sup>Corresponding Author
+<br>
+<sup>1</sup>HKUST(GZ), <sup>2</sup>HKUST, <sup>3</sup>NWPU
+
+<h5 align="center"> If you like our project, please give us a star ⭐ on GitHub for latest update.  </h2>
+
+ <a href='https://arxiv.org/abs/2511.13704'><img src='https://img.shields.io/badge/arXiv-xxxx.xxxxx-b31b1b.svg'></a>
+<br>
+
+</div>
+
+
+<table class="center">
+    <tr>
+    <td><img src="assets/latentmorph.png"></td>
+    </tr>
+</table>
+
+
+
+## 🧰 TODO
+
+- [x] Release training code.
+- [ ] Release inference code.
+- [ ] Release Paper.
+- [ ] Release model weights.
+
+---
+
+
+
+<a name="installation"></a>
+## 🚀 Installation
+
+### 1. Clone this repository and navigate to source folder
+```bash
+cd LatentMorph
 ```
-LatentMorph/
-├─ sft_train.sh                  # SFT training launcher
-├─ latent_sft/                   # SFT training + model wrapper (main entry in train/)
-│  ├─ train/
-│  │  ├─ run_control.py          # Entry point (parse config + start Trainer)
-│  │  ├─ trainer_control.py      # Training logic (DDP/FSDP, checkpointing)
-│  │  └─ ddp_utils.py            # Distributed utilities
-│  └─ models/
-│     ├─ config.json             # Training config (data, model paths, hparams, latent_control switch)
-│     ├─ config_io.py            # Parse config.json (build LatentControllerConfig)
-│     ├─ data.py                 # Parquet loader + image cache + DataLoader
-│     ├─ prompt.py               # CFG prompt embeddings + token/vec utilities
-│     └─ latent_morph.py         # LatentMorph wrapper (main sft train model)
-├─ latent_control/               # Lightweight control modules
-│  ├─ controller.py              # LatentController & Config
-│  ├─ trigger.py                 # Trigger (when to inject / check frequency)
-│  ├─ condenser.py               # Condenser (short-context compression)
-│  ├─ long_condenser.py          # LongCondenser (long-context compression)
-│  ├─ translator.py              # Translator (map latent/state to control space)
-│  └─ shaper.py                  # Shaper (produce control tokens / CFG control strength)
-├─ latent_rl/                    # RL: train trigger + condenser to learn when to trigger control
-│  ├─ __init__.py
-│  ├─ data/
-│  │  └─ compbench_prompts.py     # Load T2I-CompBench prompts (txt, one per line)
-│  ├─ rollout/
-│  │  └─ rollout_trigger.py       # rollout: generate image tokens + record trigger decisions
-│  ├─ reward/
-│  │  ├─ combined.py              # reward aggregation: CLIP + HPS
-│  │  ├─ clip_reward.py           # CLIP text-image score
-│  │  └─ hps_reward.py            # HPS-v2.1 score (optional dependency)
-│  ├─ tools/
-│  │  └─ count_compbench_prompts.py  # Count prompts (total / unique)
-│  └─ train/
-│     └─ run_trigger_grpo.py      # RL entry (GRPO/REINFORCE + hinge penalty)
-├─ Janus-Pro/
-└─ data/                         # HF/Torch caches used during training
-```
 
-Dataset: midjourney-prompts
-
-## Open-source usage (SFT + RL)
-
-This README is written for a fresh machine where you have **nothing** prepared yet.
-It assumes you are already inside the repo root: `LatentMorph/`.
-
-LatentMorph has two training stages:
-
-- **SFT (`latent_sft`)**: train lightweight control modules (controller) with teacher-forcing while freezing the large Janus model.
-- **RL (`latent_rl`)**: train a trigger policy + condenser with CLIP/HPS rewards (the rest of Janus/control stack stays frozen).
-
-### 0) (Datasets) Download datasets / prompts (Hugging Face)
-
-This repo **does not ship** training datasets under `data/`. Please download them locally via Hugging Face.
-
-### 1) Create environment
+### 2. Build Environment 
 
 This repo ships `environment.yml`.
 
@@ -69,13 +59,22 @@ If you don't use conda, make sure you can run:
 python -c "import torch; import transformers; print(torch.__version__)"
 ```
 
-### 2) Create the local data layout
+---
+
+
+
+<a name="data&model"></a>
+## 🌏 Data & Model
+
+This repo does not ship training datasets under `data/`. Please download them locally via Hugging Face.
+
+### 1. Create the local data layout
 
 ```bash
 mkdir -p data/.cache/huggingface data/.cache/torch data/hps_ckpt outputs_sft/checkpoints_control outputs/rl_result
 ```
 
-### 3) Download model weights into the local cache
+### 2. Download model weights into the local cache
 
 We store Hugging Face cache inside the repo:
 
@@ -99,7 +98,7 @@ bash scripts/download_required_assets.sh
 python -m pip install "git+https://github.com/tgxs002/HPSv2.git"
 ```
 
-### 4) Datasets / prompts (download from Hugging Face)
+### 3. Datasets / prompts (download from Hugging Face)
 
 We expect the following local layout:
 
@@ -126,7 +125,27 @@ ls -lh data/midjourney-prompts/data | head
 ls -lh data/T2I-CompBench/examples/dataset | head
 ```
 
-## SFT: train controller (teacher-forcing)
+---
+
+
+
+<a name="inference_Suite"></a>
+## 📍 Inference Suite
+
+TBD...
+
+---
+
+<a name="training_suite"></a>
+## ▶️ Training Suite
+
+LatentMorph has two training stages:
+
+- **SFT (`latent_sft`)**: train lightweight control modules (controller) with teacher-forcing while freezing the large Janus model.
+- **RL (`latent_rl`)**: train a trigger policy + condenser with CLIP/HPS rewards (the rest of Janus/control stack stays frozen).
+
+
+### SFT: train controller (teacher-forcing)
 
 ```bash
 bash sft_train.sh
@@ -137,7 +156,7 @@ SFT outputs:
 - `outputs_sft/checkpoints_control/ckpt_latest.pt`
 - `outputs_sft/checkpoints_control/ckpt_step_*.pt`
 
-## RL: train trigger policy (policy gradient)
+### RL: train trigger policy (policy gradient)
 
 Make sure you already have the SFT checkpoint:
 
@@ -157,31 +176,22 @@ RL outputs:
 - `outputs/rl_result/ckpt_step_*.pt`
 - `outputs/rl_result/logs/`
 
-## Suggested local directory structure
+---
 
-A typical layout:
-
-```
-LatentMorph/
-├─ data/
-│  ├─ midjourney-prompts/                 # your training dataset (parquet under data/)
-│  ├─ T2I-CompBench/examples/dataset/     # optional RL prompts (*.txt)
-│  ├─ hps_ckpt/
-│  │  ├─ HPS_v2.1_compressed.pt
-│  │  └─ open_clip_pytorch_model.bin
-│  └─ .cache/
-│     ├─ huggingface/                     # set HF_HOME to this dir (contains Janus + CLIP weights)
-│     └─ torch/                           # set TORCH_HOME to this dir (optional)
-└─ outputs/
-   ├─ (deprecated) checkpoints_control/   # old path (before outputs_sft/)
-   └─ rl_result/                          # RL logs + ckpts (ckpt_latest.pt, ckpt_step_*.pt)
-└─ outputs_sft/
-   ├─ checkpoints_control/                # SFT checkpoints (ckpt_latest.pt, ckpt_step_*.pt)
-   └─ logs/                               # SFT logs (sft_train.log)
+<a name="citation"></a>
+## 📝 Citation
+Please consider citing our paper if you find LatentMorph is useful:
+```bib
+TBD...
 ```
 
-To download the small required reward weights (HPS) into `data/hps_ckpt/`:
+---
 
-- `bash scripts/download_required_assets.sh`
+## 🍗 Acknowledgement
 
+Our LatentMorph is developed based on the codebases of [Janus-Pro](https://github.com/deepseek-ai/Janus) and [Janus-Pro-R1](https://github.com/wendell0218/Janus-Pro-R1), and we would like to thank the developers of both.
 
+---
+
+## 📪 Contact
+For any question, feel free to open a issue or email `haroldchen328@gmail.com`.
