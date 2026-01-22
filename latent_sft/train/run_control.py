@@ -58,9 +58,8 @@ def parse_args():
     ap.add_argument(
         "--out_dir",
         type=str,
-        # By default, place checkpoints outside TwiGpipline (reduce repo size/pressure).
-        default=os.path.abspath(os.path.join(_REPO_ROOT, "..", "checkpoints_control_image_loss2")),
-        help="If empty, defaults to repo_root/checkpoints_control_image_loss2",
+        default=os.path.abspath(os.path.join(_REPO_ROOT, "..", "outputs_sft", "checkpoints_control")),
+        help="If empty, defaults to repo_root/outputs_sft/checkpoints_control",
     )
     ap.add_argument(
         "--device",

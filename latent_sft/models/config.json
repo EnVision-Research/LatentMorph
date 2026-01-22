@@ -48,7 +48,7 @@
         }
     },
     "train_data": {
-        "root_dir": "/nfs/wenjie/wenjie_0104/midjourney-prompts",
+        "root_dir": "data/midjourney-prompts",
         "max_samples": 50000,
         "sources": [
             {

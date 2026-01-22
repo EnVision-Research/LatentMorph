@@ -18,8 +18,8 @@ class CompBenchPromptsConfig:
     If `prompts_file` is a file, we only read that file.
 
     Examples:
-      prompts_file="/nfs/wenjie/wenjie_0104/T2I-CompBench/examples/dataset"  # directory: scan all .txt
-      prompts_file="/nfs/wenjie/wenjie_0104/T2I-CompBench/examples/dataset/color.txt"  # file: read only this file
+      prompts_file="data/T2I-CompBench/examples/dataset"  # directory: scan all .txt
+      prompts_file="data/T2I-CompBench/examples/dataset/color.txt"  # file: read only this file
     """
 
     prompts_file: str

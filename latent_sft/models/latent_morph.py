@@ -82,8 +82,24 @@ class LatentMorph(torch.nn.Module):
         self.controller = controller
 
         # CFG fix: use different control strengths for cond/uncond batches (learnable).
-        self.control_strength_cond = torch.nn.Parameter(torch.tensor(float(control_strength_cond), dtype=torch.float32))
-        self.control_strength_uncond = torch.nn.Parameter(torch.tensor(float(control_strength_uncond), dtype=torch.float32))
+        # NOTE: FSDP does not support 0-d (scalar) parameters. Keep them as 1D tensors with numel==1.
+        self.control_strength_cond = torch.nn.Parameter(torch.tensor([float(control_strength_cond)], dtype=torch.float32))
+        self.control_strength_uncond = torch.nn.Parameter(torch.tensor([float(control_strength_uncond)], dtype=torch.float32))
+
+        # Backward-compatibility: older checkpoints may store these as scalars; reshape them on load.
+        def _reshape_scalar_strengths(module, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs):
+            for name in ("control_strength_cond", "control_strength_uncond"):
+                k = prefix + name
+                if k in state_dict:
+                    v = state_dict[k]
+                    try:
+                        if getattr(v, "ndim", None) == 0:
+                            state_dict[k] = v.view(1)
+                    except Exception:
+                        pass
+
+        # torch>=2.5 signature: hook(module, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs)
+        self.register_load_state_dict_pre_hook(_reshape_scalar_strengths)
 
         # Do NOT register these as nn.Modules
         self.__dict__["_frozen_model"] = frozen_model
@@ -237,8 +253,8 @@ class LatentMorph(torch.nn.Module):
         ctrl_tokens = controller.shaper.make_control_tokens_for_cfg(c_vec).to(torch.float16)  # [2B,K,D]
         # CFG fix: scale control strength separately for cond/uncond batches (avoid in-place slicing that breaks autograd)
         scale = torch.empty((ctrl_tokens.shape[0], 1, 1), device=ctrl_tokens.device, dtype=ctrl_tokens.dtype)
-        scale[0::2] = self.control_strength_cond.to(dtype=ctrl_tokens.dtype)
-        scale[1::2] = self.control_strength_uncond.to(dtype=ctrl_tokens.dtype)
+        scale[0::2] = self.control_strength_cond[0].to(dtype=ctrl_tokens.dtype)
+        scale[1::2] = self.control_strength_uncond[0].to(dtype=ctrl_tokens.dtype)
         ctrl_tokens = ctrl_tokens * scale
 
         # Strict KV injection: do NOT append ctrl_tokens as extra tokens (would extend cache length / disturb timeline).
@@ -530,8 +546,8 @@ class LatentMorph(torch.nn.Module):
         c_vec = controller.translator(z_vec=z_vec.to(ctrl_dtype), m_vec=long_m_vec.to(ctrl_dtype), p_vec=prompt_vec.to(ctrl_dtype))
         ctrl_tokens = controller.shaper.make_control_tokens_for_cfg(c_vec).to(torch.float16)  # [2B,K,D]
         scale = torch.empty((ctrl_tokens.shape[0], 1, 1), device=ctrl_tokens.device, dtype=ctrl_tokens.dtype)
-        scale[0::2] = self.control_strength_cond.to(dtype=ctrl_tokens.dtype)
-        scale[1::2] = self.control_strength_uncond.to(dtype=ctrl_tokens.dtype)
+        scale[0::2] = self.control_strength_cond[0].to(dtype=ctrl_tokens.dtype)
+        scale[1::2] = self.control_strength_uncond[0].to(dtype=ctrl_tokens.dtype)
         ctrl_tokens = ctrl_tokens * scale
         ctrl_delta = ctrl_tokens.mean(dim=1, keepdim=True)  # [2B,1,D]
 
@@ -675,8 +691,8 @@ class LatentMorph(torch.nn.Module):
         ctrl_tokens = controller.shaper.make_control_tokens_for_cfg(c_vec).to(torch.float16)  # [2B,K,D]
         # CFG fix: scale control strength separately for cond/uncond batches (avoid in-place slicing that breaks autograd)
         scale = torch.empty((ctrl_tokens.shape[0], 1, 1), device=ctrl_tokens.device, dtype=ctrl_tokens.dtype)
-        scale[0::2] = self.control_strength_cond.to(dtype=ctrl_tokens.dtype)
-        scale[1::2] = self.control_strength_uncond.to(dtype=ctrl_tokens.dtype)
+        scale[0::2] = self.control_strength_cond[0].to(dtype=ctrl_tokens.dtype)
+        scale[1::2] = self.control_strength_uncond[0].to(dtype=ctrl_tokens.dtype)
         ctrl_tokens = ctrl_tokens * scale
         k_ctrl = int(ctrl_tokens.shape[1])
 

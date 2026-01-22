@@ -67,7 +67,7 @@ class HpsV21Scorer:
                 "Missing HPS ckpt files. Please make sure the following exist:\n"
                 f"- {self._open_clip_bin}\n"
                 f"- {self._hps_ckpt}\n"
-                "You can auto-download them via `rl_train.sh`, or place them under `out_dir/hps_ckpt` manually."
+                "Please download them manually and place them under the directory passed via `--hps_ckpt_dir`."
             )
 
     def _maybe_init_model(self):

@@ -66,7 +66,7 @@ class TwiGControlTrainer:
         self.device = self.dist.device
         # By default, place checkpoints outside LatentMorph (reduce repo size/pressure).
         _repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-        self.out_dir = args.out_dir.strip() or os.path.abspath(os.path.join(_repo_root, "..", "checkpoints_control_image_loss2"))
+        self.out_dir = args.out_dir.strip() or os.path.abspath(os.path.join(_repo_root, "..", "outputs_sft", "checkpoints_control"))
         os.makedirs(self.out_dir, exist_ok=True)
 
         self.model: MultiModalityCausalLM | None = None
@@ -254,181 +254,14 @@ class TwiGControlTrainer:
         else:
             self.scaler = torch.amp.GradScaler("cuda", enabled=(self.device.type == "cuda"))
 
-    def _infer_every_n_steps(self) -> int:
-        # Requirement: run inference check every 50 steps.
-        return 50
-
-    @torch.inference_mode()
-    def save_train_check(self, *, step: int, prompt: str, ctrl_state: dict | None = None):
-        """
-        Periodic inference check during training:
-        - Save only on rank0
-        - Overwrite the "latest" outputs each time (keep one image + one text file for quick viewing)
-        - Under FSDP: do NOT run inference directly on the FSDP module (it may trigger collectives and require all ranks).
-          Instead, rebuild a non-FSDP controller from the just-saved controller state, and run full inference on rank0 only.
-        """
-        if not ddp_utils.is_main_process():
-            return
-        if self.model is None or self.processor is None or self.tokenizer is None:
-            return
-        if self.loss_model is None:
-            return
-
-        out_dir = os.path.join(self.out_dir, "train_check")
-        os.makedirs(out_dir, exist_ok=True)
-
-        # Choose controller state: prefer in-memory state from save_latest; otherwise read ckpt_latest.pt from disk.
-        if ctrl_state is None:
-            ckpt_path = os.path.join(self.out_dir, "ckpt_latest.pt")
-            if os.path.exists(ckpt_path):
-                ckpt = torch.load(ckpt_path, map_location="cpu")
-                ctrl_state = ckpt.get("controller", None)
-        if ctrl_state is None:
-            print(f"[infer-check] skip (no ctrl_state) step={step}", flush=True)
-            return
-
-        if getattr(self, "_latent_cfg", None) is None or getattr(self, "_d_model", None) is None:
-            print(f"[infer-check] skip (missing _latent_cfg/_d_model) step={step}", flush=True)
-            return
-
-        # Build a temporary controller (non-FSDP) and load weights.
-        tmp_ctrl = LatentController(d_model=int(self._d_model), tokenizer=self.tokenizer, cfg=self._latent_cfg).to(self.device).eval()
-        # FSDP-saved state_dict may contain a "controller." prefix (because it's from the whole loss_model state_dict).
-        if isinstance(ctrl_state, dict) and any(k.startswith("controller.") for k in ctrl_state.keys()):
-            stripped = {k[len("controller.") :]: v for k, v in ctrl_state.items() if k.startswith("controller.")}
-            tmp_ctrl.load_state_dict(stripped, strict=False)
-        else:
-            tmp_ctrl.load_state_dict(ctrl_state, strict=False)
-
-        # Temporary LatentMorph (reuse frozen large model).
-        from latent_sft.models.latent_morph import LatentMorph
-
-        tmp_morph = LatentMorph(
-            frozen_model=self.model,
-            processor=self.processor,
-            tokenizer=self.tokenizer,
-            controller=tmp_ctrl,
-            img_size=self.img_size,
-            patch_size=self.patch_size,
-            image_token_num=self.image_token_num,
-            stages=self.stages,
-            part_template=self.part_template,
-            use_understanding=True,
-            understanding_max_tokens=self.understanding_max_tokens,
-            cfg_weight=self.cfg_weight,
-            temperature=self.temperature,
-        ).to(self.device)
-
-        # During inference: temporarily switch to eval + enable cache; restore training settings afterwards.
-        lm = getattr(self.model, "language_model", None)
-        was_train = bool(getattr(lm, "training", False)) if lm is not None else False
-        orig_use_cache = None
-        try:
-            if lm is not None and hasattr(lm, "eval"):
-                lm.eval()
-            if lm is not None and hasattr(lm, "config") and hasattr(lm.config, "use_cache"):
-                orig_use_cache = bool(lm.config.use_cache)
-                lm.config.use_cache = True
-
-            image_ids, inj = tmp_morph.generate_image_tokens(base_prompt=str(prompt), seed=int(step))
-            img = tmp_morph.decode_image_tokens_to_pil(image_ids)[0]
-
-            # Save with step-based names (keep history): step_000050.png + step_000050.txt
-            img_path = os.path.join(out_dir, f"step_{int(step):06d}.png")
-            txt_path = os.path.join(out_dir, f"step_{int(step):06d}.txt")
-            img.save(img_path)
-            with open(txt_path, "w", encoding="utf-8") as f:
-                f.write(f"step: {step}\n")
-                f.write(f"inj: {inj}\n")
-                f.write(f"prompt: {str(prompt)}\n")
-
-            # Also overwrite latest.png/latest.txt for quick access to the newest result.
-            latest_img = os.path.join(out_dir, "latest.png")
-            latest_txt = os.path.join(out_dir, "latest.txt")
-            try:
-                img.save(latest_img)
-                with open(latest_txt, "w", encoding="utf-8") as f:
-                    f.write(f"step: {step}\n")
-                    f.write(f"inj: {inj}\n")
-                    f.write(f"prompt: {str(prompt)}\n")
-            except Exception:
-                pass
-
-            # Optional: save pure Janus-Pro baseline (no controller / no injection).
-            # Switches:
-            # - env var TWIG_SAVE_STEP_BASE=1
-            # - or config.json train_check.save_base=true
-            try:
-                import os as _os
-
-                save_base_env = str(_os.environ.get("TWIG_SAVE_STEP_BASE", "0")).strip().lower()
-                save_base = save_base_env in ("1", "true", "yes", "y", "on")
-                if (not save_base) and isinstance(getattr(self, "cfg", None), dict):
-                    tc = self.cfg.get("train_check", {})
-                    if isinstance(tc, dict):
-                        save_base = bool(tc.get("save_base", False))
-
-                if save_base:
-                    # Generate a pair: identical prefix token/KV cache, diverge only at inj (easy to compare control effect).
-                    ctrl_ids, base_ids, inj2 = tmp_morph.generate_control_and_base_shared_prefix(
-                        base_prompt=str(prompt), seed=int(step)
-                    )
-                    # Replace current step's control output with ctrl_ids to ensure alignment with base.
-                    image_ids = ctrl_ids
-                    inj = int(inj2)
-                    img = tmp_morph.decode_image_tokens_to_pil(image_ids)[0]
-
-                    base_img = tmp_morph.decode_image_tokens_to_pil(base_ids)[0]
-                    base_path = os.path.join(out_dir, f"step_{int(step):06d}_base.png")
-                    base_img.save(base_path)
-                    # Also overwrite a latest baseline for quick viewing.
-                    base_latest = os.path.join(out_dir, "latest_base.png")
-                    base_img.save(base_latest)
-                    print(f"[infer-check] saved base {base_path}", flush=True)
-            except Exception as e:
-                print(f"[infer-check] base skipped/failed step={step}: {e}", flush=True)
-
-            print(f"[infer-check] saved {img_path} (step={step}, inj={inj})", flush=True)
-        finally:
-            try:
-                if lm is not None and orig_use_cache is not None and hasattr(lm, "config") and hasattr(lm.config, "use_cache"):
-                    lm.config.use_cache = orig_use_cache
-                if lm is not None and was_train and hasattr(lm, "train"):
-                    lm.train()
-            except Exception:
-                pass
-            try:
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-            except Exception:
-                pass
-
     def save_latest(self, step: int) -> dict | None:
         # Backward-compatible wrapper: save a step ckpt and update ckpt_latest.pt.
         return self.save_checkpoint(step=step, keep_latest=True)
 
-    def _controller_state_for_infer(self) -> dict | None:
-        """
-        Only for in-memory inference in save_train_check during training:
-        - Non-FSDP: can directly use current controller.state_dict()
-        - FSDP: do not gather full_state_dict here (would block/require all ranks); return None and fall back to ckpt_latest.pt on disk
-        """
-        if self.loss_model is None:
-            return None
-        if self.dist.ddp and self.dist.fsdp:
-            return None
-        if not ddp_utils.is_main_process():
-            return None
-        base = self.loss_model.module if self.dist.ddp else self.loss_model
-        try:
-            return base.controller.state_dict()
-        except Exception:
-            return None
-
     def save_checkpoint(self, *, step: int, keep_latest: bool = True) -> dict | None:
         """
         Save a checkpoint (named by step; no overwriting of history), and optionally update ckpt_latest.pt.
-        Returns controller state (rank0) for reuse by save_train_check.
+        Returns controller state (rank0).
         """
         if self.loss_model is None:
             raise RuntimeError("loss_model is None")
@@ -540,12 +373,6 @@ class TwiGControlTrainer:
         for batch in self.loader:
             if batch is None:
                 continue
-            # Use the first caption in the current batch for periodic inference (aligned with training data).
-            try:
-                _caps = batch[1]
-                infer_prompt = str(_caps[0]) if isinstance(_caps, (list, tuple)) and _caps else ""
-            except Exception:
-                infer_prompt = ""
 
             step_t0 = time.perf_counter()
             loss, pred_time_s = self.run_step(batch)  # scalar + seconds
@@ -585,13 +412,6 @@ class TwiGControlTrainer:
             ctrl_state = None
             if global_step % 100 == 0:
                 ctrl_state = self.save_checkpoint(step=global_step, keep_latest=True)
-
-            # Run inference check every 50 steps (save only the latest image + text).
-            n_infer = self._infer_every_n_steps()
-            if n_infer > 0 and (global_step % n_infer == 0) and infer_prompt:
-                # Prefer state from the checkpoint we just saved; otherwise (non-FSDP) use in-memory state;
-                # finally fall back to reading ckpt_latest.pt from disk.
-                self.save_train_check(step=global_step, prompt=infer_prompt, ctrl_state=ctrl_state or self._controller_state_for_infer())
 
             if max_batches_per_epoch > 0 and global_step >= max_batches_per_epoch:
                 break

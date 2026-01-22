@@ -34,7 +34,7 @@ def main():
     ap.add_argument(
         "--pattern",
         type=str,
-        default="/nfs/wenjie/wenjie_0104/T2I-CompBench/examples/dataset/*.txt",
+        default="data/T2I-CompBench/examples/dataset/*.txt",
         help="glob pattern, e.g. /path/to/examples/dataset/*.txt or .../color_*.txt",
     )
     ap.add_argument("--show_files", type=int, default=1, help="1=print per-file line counts, 0=print totals only")

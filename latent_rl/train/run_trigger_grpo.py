@@ -5,24 +5,24 @@ import os
 import random
 import sys
 import time
-import warnings
 from typing import List
 
 import numpy as np
 
-# --- ensure Janus-Pro package is importable (avoid "No module named 'janus'") ---
-_THIS_DIR = os.path.dirname(__file__)
-_REPO_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "..", ".."))
-_JANUS_PRO_DIR = os.path.join(_REPO_ROOT, "Janus-Pro")
-for _p in (_REPO_ROOT, _JANUS_PRO_DIR):
-    if os.path.isdir(_p) and _p not in sys.path:
-        sys.path.insert(0, _p)
+import warnings
 
-# --- silence warnings / noisy logs ---
-os.environ.setdefault("PYTHONWARNINGS", "ignore")
+# Hard-coded: be quiet (rank0-only logs + no warnings/noisy transformers logs).
+os.environ["RL_RANK0_ONLY"] = "1"
+os.environ["PYTHONWARNINGS"] = "ignore"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["TRANSFORMERS_VERBOSITY"] = "error"
 warnings.filterwarnings("ignore")
+try:  # pragma: no cover
     from transformers.utils import logging as hf_logging  # type: ignore
+
     hf_logging.set_verbosity_error()
+except Exception:
+    pass
 
 import torch
 import torch.distributed as dist
@@ -42,10 +42,6 @@ from latent_rl.reward.clip_reward import ClipRewardConfig
 from latent_rl.reward.hps_reward import HpsRewardConfig
 from latent_rl.reward.combined import CombinedReward, RewardConfig
 from latent_rl.rollout.rollout_utils import RolloutConfig
-
-
-def _repo_root() -> str:
-    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
 def _freeze_all_params(m: torch.nn.Module):
@@ -92,141 +88,8 @@ def _append_reward_log(*, path: str, step: int, reward_rl: float, reward_sft: fl
         )
 
 
-def _append_log_separator(*, path: str, msg: str):
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write("\n")
-        f.write(str(msg).rstrip("\n") + "\n")
-        f.write("\n")
-
-
-def _tail_last_logged_step(path: str) -> int | None:
-    """
-    Try to parse the last logged `step` from the reward log (ignoring empty lines and separators).
-    Expected format: `step 00000123: ...`
-    """
-    if not os.path.isfile(path):
-        return None
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-        for line in reversed(lines):
-            s = line.strip()
-            if not s:
-                continue
-            if not s.startswith("step "):
-                continue
-            # step 00000123:
-            parts = s.split()
-            if len(parts) < 2:
-                continue
-            step_str = parts[1].rstrip(":")
-            if step_str.isdigit():
-                return int(step_str)
-    except Exception:
-        return None
-    return None
-
-
-def _resolve_reward_log_path(*, out_dir: str, resume_ckpt: str | None = None) -> str:
-    """
-    - Non-resume: default to reward_{RUN_ID}.txt (keeps backward compatibility)
-    - Resume: prefer reusing the newest reward_*.txt under out_dir; otherwise fall back to reward.txt
-    """
-    run_id = os.environ.get("RUN_ID", "") or time.strftime("%Y%m%d_%H%M%S", time.localtime())
-    default_path = os.path.join(str(out_dir), f"reward_{run_id}.txt")
-    if not resume_ckpt:
-        return default_path
-
-    # Resume: try to keep appending to the original reward file instead of creating a new one.
-    try:
-        import glob
-
-        cands = sorted(
-            glob.glob(os.path.join(str(out_dir), "reward_*.txt")),
-            key=lambda p: os.path.getmtime(p),
-            reverse=True,
-        )
-        if len(cands) > 0:
-            return str(cands[0])
-    except Exception:
-        pass
-
-    fallback = os.path.join(str(out_dir), "reward.txt")
-    return fallback
-
-
 def _unwrap_ddp(m: torch.nn.Module) -> torch.nn.Module:
     return m.module if isinstance(m, DDP) else m
-
-
-def _load_resume_ckpt(
-    *,
-    path: str,
-    policy_mod: torch.nn.Module,
-    condenser_mod: torch.nn.Module,
-    opt: torch.optim.Optimizer,
-    policy_ema: "EMA | None",
-    condenser_ema: "EMA | None",
-) -> tuple[int, int]:
-    ckpt = torch.load(str(path), map_location="cpu")
-    if not isinstance(ckpt, dict):
-        raise ValueError(f"Bad checkpoint type: {type(ckpt)}")
-    step = int(ckpt.get("step", 0))
-    global_prompts_seen = int(ckpt.get("global_prompts_seen", 0))
-
-    pol_sd = ckpt.get("policy", None)
-    cond_sd = ckpt.get("condenser", None)
-    opt_sd = ckpt.get("optimizer", None)
-    if pol_sd is None or cond_sd is None or opt_sd is None:
-        raise KeyError("Checkpoint missing one of: policy / condenser / optimizer")
-
-    msg_pol = policy_mod.load_state_dict(pol_sd, strict=False)
-    msg_cond = condenser_mod.load_state_dict(cond_sd, strict=False)
-    opt.load_state_dict(opt_sd)
-
-    if policy_ema is not None and isinstance(ckpt.get("policy_ema", None), dict):
-        sd = ckpt["policy_ema"]
-        policy_ema.decay = float(sd.get("decay", policy_ema.decay))
-        policy_ema.shadow = sd.get("shadow", policy_ema.shadow)
-    if condenser_ema is not None and isinstance(ckpt.get("condenser_ema", None), dict):
-        sd = ckpt["condenser_ema"]
-        condenser_ema.decay = float(sd.get("decay", condenser_ema.decay))
-        condenser_ema.shadow = sd.get("shadow", condenser_ema.shadow)
-
-    # IMPORTANT:
-    # torch.load(map_location="cpu") puts EMA shadow tensors on CPU.
-    # If update() sees parameters on CUDA, it may trigger "found cuda:0 and cpu".
-    # Move shadow tensors to the same device as model parameters.
-    def _move_shadow_to_device(ema: "EMA | None", dev: torch.device):
-        if ema is None:
-            return
-        if not isinstance(getattr(ema, "shadow", None), dict):
-            return
-        for k, v in list(ema.shadow.items()):
-            if isinstance(v, torch.Tensor):
-                ema.shadow[k] = v.to(device=dev, non_blocking=True)
-
-    try:
-        pol_dev = next(policy_mod.parameters()).device
-        _move_shadow_to_device(policy_ema, pol_dev)
-    except StopIteration:
-        pass
-    try:
-        cond_dev = next(condenser_mod.parameters()).device
-        _move_shadow_to_device(condenser_ema, cond_dev)
-    except StopIteration:
-        pass
-
-    if _is_main():
-        print(f"[resume] load ckpt: {path}", flush=True)
-        print(f"[resume] step={step} global_prompts_seen={global_prompts_seen}", flush=True)
-        if hasattr(msg_pol, "missing_keys") and hasattr(msg_pol, "unexpected_keys"):
-            print(f"[resume] policy missing={len(msg_pol.missing_keys)} unexpected={len(msg_pol.unexpected_keys)}", flush=True)
-        if hasattr(msg_cond, "missing_keys") and hasattr(msg_cond, "unexpected_keys"):
-            print(f"[resume] condenser missing={len(msg_cond.missing_keys)} unexpected={len(msg_cond.unexpected_keys)}", flush=True)
-
-    return step, global_prompts_seen
 
 
 class EMA:
@@ -250,34 +113,6 @@ class EMA:
 
     def state_dict(self):
         return {"decay": float(self.decay), "shadow": self.shadow}
-
-
-def _save_demo_step_png(*, out_dir: str, step: int, tag: str, img):
-    os.makedirs(out_dir, exist_ok=True)
-    name = f"step_{int(step):06d}_{str(tag)}"
-    path = os.path.join(out_dir, f"{name}.png")
-    img.save(path)
-    return path
-
-
-def _save_demo_step_txt(*, out_dir: str, step: int, prompt: str, seed: int, inj_token_idx: int, rl_trigger_steps: List[int] | None):
-    os.makedirs(out_dir, exist_ok=True)
-    name = f"step_{int(step):06d}"
-    txt = os.path.join(out_dir, f"{name}.txt")
-    with open(txt, "w", encoding="utf-8") as f:
-        f.write(f"step: {int(step)}\n")
-        f.write(f"seed: {int(seed)}\n")
-        # Note: in rollout, trigger_steps stores step_idx=t-1 (the position consuming token t-1).
-        # To avoid ambiguity, we log both token_idx(t) and step_idx(t-1).
-        f.write(f"sft_inj_token_idx(t): {int(inj_token_idx)}\n")
-        f.write(f"sft_inj_step_idx(t-1): {int(inj_token_idx) - 1}\n")
-        f.write(f"prompt: {prompt}\n")
-        f.write(f"rl_trigger_step_idx_list(t-1): {rl_trigger_steps}\n")
-        if rl_trigger_steps is None:
-            f.write(f"rl_trigger_token_idx_list(t): None\n")
-        else:
-            f.write(f"rl_trigger_token_idx_list(t): {[int(x) + 1 for x in rl_trigger_steps]}\n")
-    return txt
 
 
 def _save_ckpt(
@@ -357,21 +192,14 @@ def _save_ckpt_latest_only(
 def parse_args():
     ap = argparse.ArgumentParser()
     # RL defaults to latent_rl/config.json (aligned with SFT config.json for easy parameter reuse).
-    ap.add_argument("--config", type=str, default=os.path.join(_repo_root(), "latent_rl", "config.json"))
-    ap.add_argument("--out_dir", type=str, default="/nfs/wenjie/wenjie_0104/rl_result")
-    ap.add_argument(
-        "--resume_ckpt",
-        type=str,
-        default="",
-        help="Resume training from a checkpoint (e.g., out_dir/ckpt_step_00000500.pt). "
-        "This will append to the reward log and insert a separator line.",
-    )
+    ap.add_argument("--config", type=str, default="latent_rl/config.json")
+    ap.add_argument("--out_dir", type=str, default="outputs/rl_result")
 
     # data
     ap.add_argument(
         "--prompts_file",
         type=str,
-        default="/nfs/wenjie/wenjie_0104/T2I-CompBench/examples/dataset",
+        default="data/T2I-CompBench/examples/dataset",
         help="T2I-CompBench txt file or directory (if directory, scan and merge all .txt files).",
     )
     ap.add_argument("--max_prompts", type=int, default=0, help="0 = no truncation; run through the entire prompts_file")
@@ -447,15 +275,12 @@ def _init_dist():
 
 
 def _setup_stdio(*, out_dir: str):
-    # If RL_RANK0_ONLY=1, suppress non-rank0 stdout and redirect stderr to per-rank log.
-    rank0_only = os.environ.get("RL_RANK0_ONLY", "0") == "1"
-    if rank0_only and not _is_main():
-        sys.stdout = open(os.devnull, "w")
+    # Hard-coded: suppress non-rank0 stdout and redirect stderr to per-rank log.
+    if not _is_main():
         os.makedirs(os.path.join(out_dir, "logs"), exist_ok=True)
         err_path = os.path.join(out_dir, "logs", f"rank{_rank()}.stderr.log")
+        sys.stdout = open(os.devnull, "w")
         sys.stderr = open(err_path, "a", buffering=1)
-        sys.stdout.reconfigure(line_buffering=True)
-        sys.stderr.reconfigure(line_buffering=True)
 
 
 def _seed_everything(seed: int):
@@ -684,41 +509,14 @@ def main():
 
     # Use shell redirection/tee for logs (do not write metrics files from Python here).
 
-        total_prompts = int(len(ds))
+    total_prompts = int(len(ds))
     if int(args.max_prompts) > 0:
         total_prompts = min(total_prompts, int(args.max_prompts))
     morph = _build_morph(cfg=cfg, args=args, model=model, processor=processor, tokenizer=tokenizer, controller=controller, device=device)
-
-    resume_ckpt = str(getattr(args, "resume_ckpt", "")).strip()
-    reward_log_path = _resolve_reward_log_path(out_dir=str(args.out_dir), resume_ckpt=resume_ckpt or None)
-
-    # === resume (optional) ===
-    if resume_ckpt:
-        # Note: we resume the *training state* (policy/condenser/opt/ema/step).
-        # Other frozen controller parts come from controller_ckpt (not duplicated in RL ckpt).
-        step, global_prompts_seen = _load_resume_ckpt(
-            path=str(resume_ckpt),
-            policy_mod=policy_mod,
-            condenser_mod=condenser_mod,
-            opt=opt,
-            policy_ema=policy_ema if ema_enabled else None,
-            condenser_ema=condenser_ema if ema_enabled else None,
-        )
-        if save_every_steps > 0:
-            # Avoid saving immediately after resume: next backup should be the next multiple segment
-            # (e.g., step=500 -> 600).
-            next_ckpt_step_at = ((int(step) // int(save_every_steps)) + 1) * int(save_every_steps)
-        if _is_main():
-            ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-            last_logged = _tail_last_logged_step(reward_log_path)
-            _append_log_separator(
-                path=reward_log_path,
-                msg=f"========== RESUME {ts} | ckpt={resume_ckpt} | step={int(step)} | last_logged_step={last_logged} ==========",
-            )
-            print(f"[log] reward(resume): {reward_log_path}", flush=True)
-    else:
-        if _is_main():
-            print(f"[log] reward: {reward_log_path}", flush=True)
+    run_id = os.environ.get("RUN_ID", "").strip() or time.strftime("%Y%m%d_%H%M%S", time.localtime())
+    reward_log_path = os.path.join(str(args.out_dir), f"reward_{run_id}.txt")
+    if _is_main():
+        print(f"[log] reward: {reward_log_path}", flush=True)
     for batch_prompts in loader:
         if int(args.max_steps) > 0 and step >= int(args.max_steps):
             break
@@ -828,10 +626,8 @@ def main():
             r_d = float(R_abs.to(torch.float32).mean().item())
             _append_reward_log(path=reward_log_path, step=int(step), reward_rl=r_rl, reward_sft=r_sft, reward_d=r_d)
 
-        # === hinge penalty (adaptive) ===
+        # Hinge penalty (adaptive)
         avg_p_t = torch.stack(avg_ps, dim=0).to(device)
-        # Align with Janus-Pro R1: p_ref/pbar is the within-group mean (G samples for the same prompt).
-        # Each group uses its own mean as baseline; do not mix across groups/ranks.
         B0 = int(len(base_prompts))
         avg_p_g = avg_p_t.view(B0, G).mean(dim=1, keepdim=True)  # [B0,1]
         p_ref_t = avg_p_g.repeat(1, G).view(-1)  # [B0*G]
@@ -849,15 +645,11 @@ def main():
         adv_clip = float(getattr(args, "adv_clip", 5.0))
         A = torch.clamp(A, min=-adv_clip, max=adv_clip)
 
-        # === policy gradient loss (GRPO / REINFORCE style) ===
-        # Key: in this implementation, rollout and update happen within the same step, so PPO ratio using
-        # the same logp would be identically 1. Also, after group-normalization, A has zero mean within
-        # each group, making loss_pg≈0 and gradients almost vanish. Therefore we use standard policy
-        # gradient: maximize E[A * logp(a|x)].
+        # Policy gradient loss (GRPO / REINFORCE style)
         logp_sum = torch.stack(sum_logps, dim=0).to(device)  # [B0*G]
         ent_sum = torch.stack(sum_ents, dim=0).to(device)    # [B0*G]
 
-        # Use average logp/entropy per decision to avoid scale drift when decision counts differ.
+        # Normalize by decision count.
         denom = trig_decisions.to(device).clamp(min=1.0)     # [B0*G]
         logp_avg = logp_sum / denom
         ent_avg = ent_sum / denom
@@ -935,58 +727,6 @@ def main():
                 while cur_step >= int(next_ckpt_step_at):
                     next_ckpt_step_at += int(save_every_steps)
 
-        # === demo (step % 5 == 0) ===
-        # Generate 3 images: base / sft(random single injection) / rl(policy triggers + same injection style).
-        # Seed must be identical to keep the pre-injection prefix aligned.
-        if _is_main() and (step % 5 == 0):
-            from latent_rl.rollout.rollout_demo import rollout_one_demo_triplet
-
-            demo_prompt = str(base_prompts[0])
-            demo_seed = int(args.seed) + int(step) * 1000
-
-            # Align with latent_sft: inj in [150,450) (snapped to a multiple of check_every, so obs is not None).
-            check_every = int(getattr(controller.cfg.trigger, "check_every", 1))
-            low = 150
-            high_excl = min(451, int(args.image_token_num))
-            if high_excl <= low:
-                low = max(1, min(low, int(args.image_token_num) - 1))
-                high_excl = int(args.image_token_num)
-            rng = random.Random(int(demo_seed) + 12345)
-            inj = int(rng.randrange(low, high_excl))
-            if check_every > 1:
-                inj = int(max(check_every, (inj // check_every) * check_every))
-                inj = int(min(inj, int(args.image_token_num) - 1))
-
-            trip = rollout_one_demo_triplet(
-                model=model,
-                processor=processor,
-                tokenizer=tokenizer,
-                controller=controller,
-                policy=pol_mod,
-                prompt=demo_prompt,
-                seed=int(demo_seed),
-                cfg=rollout_cfg,
-                sft_inj_token_idx=int(inj),
-            )
-
-            out_dir = os.path.join(args.out_dir, "train_check")
-            img_base = morph.decode_image_tokens_to_pil(trip["base"]["image_ids"])[0]
-            img_sft = morph.decode_image_tokens_to_pil(trip["sft"]["image_ids"])[0]
-            img_rl = morph.decode_image_tokens_to_pil(trip["rl"]["image_ids"])[0]
-
-            p_base = _save_demo_step_png(out_dir=out_dir, step=int(step), tag="base", img=img_base)
-            p_sft = _save_demo_step_png(out_dir=out_dir, step=int(step), tag="sft", img=img_sft)
-            p_rl = _save_demo_step_png(out_dir=out_dir, step=int(step), tag="rl", img=img_rl)
-            p_txt = _save_demo_step_txt(
-                out_dir=out_dir,
-                step=int(step),
-                prompt=demo_prompt,
-                seed=int(demo_seed),
-                inj_token_idx=int(inj),
-                rl_trigger_steps=trip["rl"].get("trigger_steps", None),
-            )
-            print(f"[demo] saved {p_txt}", flush=True)
-
         step += 1
 
     # === training finished ===
@@ -999,10 +739,6 @@ def main():
 
 
 if __name__ == "__main__":
-    # 允许从任意 cwd 启动
-    root = _repo_root()
-    if root not in sys.path:
-        sys.path.insert(0, root)
     main()
 
 

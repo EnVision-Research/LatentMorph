@@ -174,4 +174,4 @@ dependencies:
       - transformers==4.44.2
       - triton==3.1.0
       - webdataset==1.0.2
-prefix: /nfs/wenjie/miniconda3/envs/latent
+prefix: ./envs/latent

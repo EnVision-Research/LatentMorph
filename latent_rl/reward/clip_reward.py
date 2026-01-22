@@ -13,7 +13,6 @@ class ClipRewardConfig:
     model_name_or_path: str = "openai/clip-vit-large-patch14"
     local_files_only: bool = True
     device: str = "cuda"
-    allow_download: bool = True
 
 
 class ClipTextImageScorer:
@@ -36,20 +35,13 @@ class ClipTextImageScorer:
                 "CLIP reward requires `transformers`. Please install it and ensure it can be imported."
             ) from e
 
-        # Prefer local_files_only; if it fails and allow_download=True, fall back to online download.
-        try:
-            self.processor = CLIPProcessor.from_pretrained(
-                str(cfg.model_name_or_path), local_files_only=bool(cfg.local_files_only)
-            )
-            self.model = CLIPModel.from_pretrained(
-                str(cfg.model_name_or_path), local_files_only=bool(cfg.local_files_only)
-            )
-        except Exception as e:
-            if bool(cfg.local_files_only) and bool(cfg.allow_download):
-                self.processor = CLIPProcessor.from_pretrained(str(cfg.model_name_or_path), local_files_only=False)
-                self.model = CLIPModel.from_pretrained(str(cfg.model_name_or_path), local_files_only=False)
-            else:
-                raise e
+        # Keep this simple for open-source usage: we do not auto-download weights here.
+        self.processor = CLIPProcessor.from_pretrained(
+            str(cfg.model_name_or_path), local_files_only=bool(cfg.local_files_only)
+        )
+        self.model = CLIPModel.from_pretrained(
+            str(cfg.model_name_or_path), local_files_only=bool(cfg.local_files_only)
+        )
         self.model = self.model.to(str(cfg.device)).eval()
 
     @torch.no_grad()

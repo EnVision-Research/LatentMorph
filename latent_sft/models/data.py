@@ -191,7 +191,14 @@ def resolve_train_files(cfg: dict) -> List[str]:
     if not isinstance(td, dict):
         raise ValueError("Missing `train_data` in config.json.")
 
-    root_dir = str(td.get("root_dir", "")).strip()
+    # Allow overriding dataset root at runtime for open-source usage.
+    # This avoids hardcoding machine-specific absolute paths in config.json.
+    env_root = (
+        os.environ.get("LATENTMORPH_TRAIN_DATA_ROOT", "")
+        or os.environ.get("LATENTMORPH_DATA_ROOT", "")
+        or os.environ.get("MIDJOURNEY_ROOT", "")
+    )
+    root_dir = str(env_root).strip() or str(td.get("root_dir", "")).strip()
     sources = td.get("sources", None)
     if not root_dir or not isinstance(sources, list) or not sources:
         raise ValueError("config.json train_data must include `root_dir` and a non-empty `sources` list.")
