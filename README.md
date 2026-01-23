@@ -132,7 +132,50 @@ ls -lh data/T2I-CompBench/examples/dataset | head
 <a name="inference_Suite"></a>
 ## 📍 Inference Suite
 
-TBD...
+LatentMorph has two Inference part provided : 
+
+- **SFT Inference Part (`inference_sft`)**  
+
+- **RL Inference  Part (`inference_rl`)**
+
+We offer two model for inference,one prompt or a group of prompts.
+
+Before the infer stage, you should make sure you are at the `LatentMorph`
+
+and you should activate the conda environment first : 
+
+```bash
+conda activate latent
+```
+
+More, you should prepare the `controller_ckpt`and `rl_ckpt` ( if using the rl to infer )
+
+### Run the inference for one prompt
+
+You can run the inference code for one prompy by : 
+
+```bash
+bash inference_[sft / rl] / run_infer_one.bash
+```
+
+then you can see the result in the `infetr_[sft / rl]_out \ signle.png`  
+
+you can modify the `prompt` and the `output` in the bash
+
+### Run the inference for a group of prompts
+
+If you want to generate a group of pictures,you all prepare a `txt` file to provide the prompts line by line.
+
+You can run the inference code for one prompy by : 
+
+```bash
+bash inference_[sft / rl] / run_infer.bash
+```
+
+then you can see the result in the `infetr_[sft / rl]_out \ bath`   
+
+you can modify the `prompts_file` and the `output` in the bash
+
 
 ---
 
