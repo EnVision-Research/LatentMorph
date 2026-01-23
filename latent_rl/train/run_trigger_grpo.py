@@ -243,7 +243,8 @@ def parse_args():
     ap.add_argument("--clip_weight", type=float, default=1.0)
     ap.add_argument("--hps_weight", type=float, default=1.0)
     ap.add_argument("--clip_model", type=str, default="openai/clip-vit-large-patch14")
-    ap.add_argument("--clip_local_files_only", type=int, default=1)
+    # Default to online download for CLIP reward (set to 1 if you must run fully offline).
+    ap.add_argument("--clip_local_files_only", type=int, default=0)
     ap.add_argument("--model_local_files_only", type=int, default=1)
     ap.add_argument("--ema", type=int, default=0, help="1=enable EMA for trigger policy + condenser")
     ap.add_argument("--ema_decay", type=float, default=0.999, help="EMA decay")

@@ -11,7 +11,8 @@ class ClipRewardConfig:
     enabled: bool = True
     # Prefer transformers' CLIP. If you have open_clip locally, you can extend this later.
     model_name_or_path: str = "openai/clip-vit-large-patch14"
-    local_files_only: bool = True
+    # Default to allow online download. Set True for fully offline runs.
+    local_files_only: bool = False
     device: str = "cuda"
 
 
@@ -35,7 +36,7 @@ class ClipTextImageScorer:
                 "CLIP reward requires `transformers`. Please install it and ensure it can be imported."
             ) from e
 
-        # Keep this simple for open-source usage: we do not auto-download weights here.
+        # Keep this simple for open-source usage: honor local_files_only; allow online download when False.
         self.processor = CLIPProcessor.from_pretrained(
             str(cfg.model_name_or_path), local_files_only=bool(cfg.local_files_only)
         )

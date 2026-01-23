@@ -33,13 +33,27 @@ export HF_HOME="${HF_HOME:-$data/.cache/huggingface}"
 export TORCH_HOME="${TORCH_HOME:-$data/.cache/torch}"
 export PYTHONPATH="${PYTHONPATH:-.:./Janus-Pro}"
 
+# --- HuggingFace Hub networking diagnostics / safety ---
+# NOTE:
+# - The canonical Hub endpoint is huggingface.co. huggingface.com often redirects and can confuse hub metadata checks.
+# - If you *really* need a different endpoint (e.g. internal mirror), set HF_ENDPOINT to that mirror.
+if [ -n "${HF_ENDPOINT:-}" ]; then
+  echo "[env] HF_ENDPOINT=$HF_ENDPOINT"
+  if [[ "${HF_ENDPOINT}" == "https://huggingface.com" || "${HF_ENDPOINT}" == "http://huggingface.com" ]]; then
+    echo "[warn] HF_ENDPOINT is set to huggingface.com (redirect-only). Switching to https://huggingface.co for Hub API compatibility."
+    export HF_ENDPOINT="https://huggingface.co"
+  fi
+fi
+echo "[env] HF_HOME=$HF_HOME"
+
 # Required paths (override as needed)
 HPS_CKPT_DIR="${HPS_CKPT_DIR:-$data/hps_ckpt}"
 CONTROLLER_CKPT="${CONTROLLER_CKPT:-$outputs_sft/checkpoints_control/ckpt_latest.pt}"
 
-# Local-only by default for open-source reproducibility
-CLIP_LOCAL_ONLY="${CLIP_LOCAL_ONLY:-1}"
+# CLIP: allow online download by default (set CLIP_LOCAL_ONLY=1 for fully offline runs)
+CLIP_LOCAL_ONLY="${CLIP_LOCAL_ONLY:-0}"
 MODEL_LOCAL_ONLY="${MODEL_LOCAL_ONLY:-1}"
+echo "[env] CLIP_LOCAL_ONLY=$CLIP_LOCAL_ONLY  MODEL_LOCAL_ONLY=$MODEL_LOCAL_ONLY"
 
 if [ ! -f "$CONTROLLER_CKPT" ]; then
   echo "[ERROR] controller checkpoint not found: $CONTROLLER_CKPT"
