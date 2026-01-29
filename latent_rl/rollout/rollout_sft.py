@@ -4,6 +4,8 @@ from typing import Optional
 
 import torch
 
+from ulm_lora_control import get_lm_backbone
+
 from .rollout_utils import (
     RolloutConfig,
     build_prompt,
@@ -47,7 +49,7 @@ def rollout_one_sft_once(
         device=device,
     )
 
-    lm = model.language_model.model
+    lm = get_lm_backbone(model.language_model)
     pkv = None
     inputs_embeds = prompt_embeds.to(torch.float16)
     gen_ids = torch.empty((bsz, n_tokens), device=device, dtype=torch.long)

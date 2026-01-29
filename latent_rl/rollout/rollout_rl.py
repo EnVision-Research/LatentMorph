@@ -5,6 +5,7 @@ from typing import List, Optional
 import torch
 
 from latent_control.trigger import PolicyTrigger
+from ulm_lora_control import get_lm_backbone
 
 from .rollout_utils import (
     RolloutConfig,
@@ -53,7 +54,7 @@ def rollout_one_rl(
         device=device,
     )
 
-    lm = model.language_model.model
+    lm = get_lm_backbone(model.language_model)
     inputs_embeds = prompt_embeds.to(torch.float16)  # [2,T,D]
     gen_ids = torch.empty((bsz, n_tokens), device=device, dtype=torch.long)
 

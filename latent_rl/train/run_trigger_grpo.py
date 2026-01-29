@@ -24,6 +24,14 @@ try:  # pragma: no cover
 except Exception:
     pass
 
+# Ensure Janus-Pro + LatentMorph modules are importable regardless of cwd.
+_THIS_DIR = os.path.dirname(__file__)
+_LM_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "..", ".."))  # LatentMorph/
+_JANUS_PRO_DIR = os.path.join(_LM_ROOT, "Janus-Pro")
+for _p in (_LM_ROOT, _JANUS_PRO_DIR):
+    if os.path.isdir(_p) and _p not in sys.path:
+        sys.path.insert(0, _p)
+
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -36,6 +44,7 @@ from latent_control.controller import LatentController
 from latent_control.trigger import PolicyTrigger, TriggerPolicyConfig
 from latent_sft.models.config_io import load_json_config, build_latent_controller_config
 from latent_sft.models.latent_morph import LatentMorph
+from ulm_lora_control import UlmLoraConfig, enable_ulm_lora, iter_trainable_params, save_ulm_lora
 
 from latent_rl.data.compbench_prompts import CompBenchPromptDataset, CompBenchPromptsConfig
 from latent_rl.reward.clip_reward import ClipRewardConfig
@@ -258,6 +267,18 @@ def parse_args():
     )
     ap.add_argument("--controller_ckpt", type=str, default="", help="Load pre-trained controller weights (e.g. long_condenser, shaper)")
 
+    # --- LoRA control (ULM / Janus-Pro language_model) ---
+    ap.add_argument("--lora_control", type=int, default=0, help="1=enable ULM LoRA and train it together; 0=off")
+    ap.add_argument("--ulm_lora_r", type=int, default=8)
+    ap.add_argument("--ulm_lora_alpha", type=int, default=16)
+    ap.add_argument("--ulm_lora_dropout", type=float, default=0.0)
+    ap.add_argument(
+        "--ulm_lora_target_modules",
+        type=str,
+        default="",
+        help="Optional comma-separated target module names (default uses LLaMA common modules).",
+    )
+
     # train
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--max_steps", type=int, default=0, help="0 = no step limit; iterate through the whole dataloader once")
@@ -463,12 +484,49 @@ def main():
     _seed_everything(int(args.seed))
     device = _get_device()
 
+    ulm_lora_cfg = UlmLoraConfig(
+        enabled=bool(int(getattr(args, "lora_control", 0))),
+        r=int(getattr(args, "ulm_lora_r", 8)),
+        alpha=int(getattr(args, "ulm_lora_alpha", 16)),
+        dropout=float(getattr(args, "ulm_lora_dropout", 0.0)),
+        target_modules=[
+            x.strip()
+            for x in str(getattr(args, "ulm_lora_target_modules", "")).split(",")
+            if x.strip()
+        ]
+        or None,
+    )
+
     cfg = load_json_config(os.path.abspath(args.config))
     processor, tokenizer, model = _load_model_and_processor(
         cfg=cfg,
         model_local_only=bool(int(args.model_local_files_only)),
         device=device,
     )
+
+    # Optionally enable LoRA on ULM (language_model).
+    if bool(ulm_lora_cfg.enabled):
+        if _is_main():
+            print(
+                f"[init] enabling ULM LoRA: r={ulm_lora_cfg.r} alpha={ulm_lora_cfg.alpha} dropout={ulm_lora_cfg.dropout}",
+                flush=True,
+            )
+        model.language_model = enable_ulm_lora(language_model=model.language_model, cfg=ulm_lora_cfg)
+        model.language_model.eval()
+        # Under DDP, wrap language_model so (if it ever receives grads) it can synchronize.
+        # RL rollouts are non-differentiable in current implementation, so allow unused params safely.
+        if _is_dist() and device.type == "cuda":
+            model.language_model = DDP(
+                model.language_model,
+                device_ids=[_local_rank()],
+                output_device=_local_rank(),
+                broadcast_buffers=False,
+                find_unused_parameters=True,
+            )
+        if _is_main():
+            ulm_trainable = iter_trainable_params(model.language_model)
+            n_params = sum(int(p.numel()) for p in ulm_trainable)
+            print(f"[init] ULM LoRA trainable params: {len(ulm_trainable)} tensors, {n_params} params", flush=True)
 
     controller, controller_base = _build_controllers(
         cfg=cfg,
@@ -487,6 +545,17 @@ def main():
     # === optimizer ===
     # Note: policy/condenser may be wrapped by DDP, but parameters() is still accessible.
     params = [p for p in list(controller.condenser.parameters()) + list(policy.parameters()) if p.requires_grad]
+    if bool(ulm_lora_cfg.enabled):
+        params += iter_trainable_params(model.language_model)
+        seen = set()
+        uniq = []
+        for p in params:
+            pid = id(p)
+            if pid in seen:
+                continue
+            seen.add(pid)
+            uniq.append(p)
+        params = uniq
     opt = torch.optim.AdamW(params, lr=float(args.lr), weight_decay=float(args.weight_decay), foreach=False)
 
     # === EMA (optional) ===
@@ -708,6 +777,11 @@ def main():
                     condenser_ema=condenser_ema if ema_enabled else None,
                     args_dict=vars(args),
                 )
+                if bool(ulm_lora_cfg.enabled):
+                    try:
+                        save_ulm_lora(language_model=model.language_model, out_dir=os.path.join(str(args.out_dir), "ulm_lora_latest"))
+                    except Exception as e:
+                        print(f"[save] warning: failed to save ULM LoRA latest: {e}", flush=True)
 
             save_every_steps = int(getattr(args, "save_every_steps", 0))
             if save_every_steps > 0 and next_ckpt_step_at > 0 and cur_step >= int(next_ckpt_step_at):
@@ -725,6 +799,14 @@ def main():
                     args_dict=vars(args),
                 )
                 print(f"[ckpt] saved {path}", flush=True)
+                if bool(ulm_lora_cfg.enabled):
+                    try:
+                        save_ulm_lora(
+                            language_model=model.language_model,
+                            out_dir=os.path.join(str(args.out_dir), f"ulm_lora_step_{int(cur_step):08d}"),
+                        )
+                    except Exception as e:
+                        print(f"[save] warning: failed to save ULM LoRA step adapter: {e}", flush=True)
                 while cur_step >= int(next_ckpt_step_at):
                     next_ckpt_step_at += int(save_every_steps)
 

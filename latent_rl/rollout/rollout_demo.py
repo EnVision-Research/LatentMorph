@@ -5,6 +5,7 @@ from typing import Dict
 import torch
 
 from latent_control.trigger import PolicyTrigger
+from ulm_lora_control import get_lm_backbone
 
 from .rollout_rl import rollout_one_rl
 from .rollout_sft import rollout_one_sft_once
@@ -39,7 +40,7 @@ def rollout_one_base(
         device=device,
     )
 
-    lm = model.language_model.model
+    lm = get_lm_backbone(model.language_model)
     inputs_embeds = prompt_embeds.to(torch.float16)
     gen_ids = torch.empty((bsz, n_tokens), device=device, dtype=torch.long)
 

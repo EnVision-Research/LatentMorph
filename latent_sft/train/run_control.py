@@ -7,7 +7,8 @@ import sys
 # Ensure we can import modules regardless of the current working directory.
 _THIS_DIR = os.path.dirname(__file__)
 _REPO_ROOT = os.path.abspath(os.path.join(_THIS_DIR, ".."))
-for _p in (_THIS_DIR, _REPO_ROOT):
+_JANUS_PRO_DIR = os.path.abspath(os.path.join(_REPO_ROOT, "..", "Janus-Pro"))
+for _p in (_THIS_DIR, _REPO_ROOT, _JANUS_PRO_DIR):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
@@ -73,6 +74,24 @@ def parse_args():
         default="",
         help="Optional: set CUDA_VISIBLE_DEVICES inside the script, e.g. '0,1,2,3'. "
         "Recommended to set it as a shell environment variable instead.",
+    )
+
+    # --- LoRA control (ULM / Janus-Pro language_model) ---
+    # Default OFF to keep original behavior.
+    ap.add_argument(
+        "--lora_control",
+        type=int,
+        default=0,
+        help="1=enable LoRA on ULM (Janus-Pro language_model) and train it together with the controller; 0=off",
+    )
+    ap.add_argument("--ulm_lora_r", type=int, default=8)
+    ap.add_argument("--ulm_lora_alpha", type=int, default=16)
+    ap.add_argument("--ulm_lora_dropout", type=float, default=0.0)
+    ap.add_argument(
+        "--ulm_lora_target_modules",
+        type=str,
+        default="",
+        help="Optional comma-separated target module names (default uses LLaMA common modules).",
     )
     return ap.parse_args()
 

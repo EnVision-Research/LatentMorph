@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from janus.models import MultiModalityCausalLM, VLChatProcessor
 from latent_control.controller import LatentController
 from .prompt import build_cfg_prompt_embeds, vec_to_token_ids
+from ulm_lora_control import get_lm_backbone
 
 # Compatibility with newer transformers Cache: some versions output/accept legacy tuple past_key_values,
 # but attention uses Cache.update() internally and may error when given a tuple.
@@ -98,8 +99,14 @@ class LatentMorph(torch.nn.Module):
                     except Exception:
                         pass
 
-        # torch>=2.5 signature: hook(module, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs)
-        self.register_load_state_dict_pre_hook(_reshape_scalar_strengths)
+        # torch>=2.2: register_load_state_dict_pre_hook exists.
+        # torch<=2.1: only private _register_load_state_dict_pre_hook(hook, with_module=False) exists.
+        if hasattr(self, "register_load_state_dict_pre_hook"):
+            # torch>=2.5 signature: hook(module, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs)
+            self.register_load_state_dict_pre_hook(_reshape_scalar_strengths)  # type: ignore[attr-defined]
+        else:
+            # Use the private API with with_module=True so hook receives `module` as 1st arg.
+            self._register_load_state_dict_pre_hook(_reshape_scalar_strengths, with_module=True)  # type: ignore[attr-defined]
 
         # Do NOT register these as nn.Modules
         self.__dict__["_frozen_model"] = frozen_model
@@ -188,7 +195,7 @@ class LatentMorph(torch.nn.Module):
         gen_prompt_ids: List[int] = tokenizer.encode(str(base_prompt))
         prompt_embeds, prompt_vec = build_cfg_prompt_embeds(model, processor, tokenizer, gen_prompt_ids, bsz, device)
 
-        lm = model.language_model.model
+        lm = get_lm_backbone(model.language_model)
         pkv = None
         inputs_embeds = prompt_embeds.to(torch.float16)  # [2,T,D]
         gen_ids = torch.empty((bsz, n_tokens), device=device, dtype=torch.long)  # [1,N]
@@ -341,7 +348,7 @@ class LatentMorph(torch.nn.Module):
         gen_prompt_ids: List[int] = tokenizer.encode(str(base_prompt))
         prompt_embeds, _prompt_vec = build_cfg_prompt_embeds(model, processor, tokenizer, gen_prompt_ids, bsz, device)
 
-        lm = model.language_model.model
+        lm = get_lm_backbone(model.language_model)
         pkv = None
         inputs_embeds = prompt_embeds.to(torch.float16)  # [2,T,D]
         gen_ids = torch.empty((bsz, n_tokens), device=device, dtype=torch.long)  # [1,N]
@@ -445,7 +452,7 @@ class LatentMorph(torch.nn.Module):
         prompt_embeds, prompt_vec = build_cfg_prompt_embeds(model, processor, tokenizer, gen_prompt_ids, bsz, device)
         prompt_len = int(prompt_embeds.shape[1])
 
-        lm = model.language_model.model
+        lm = get_lm_backbone(model.language_model)
 
         def _sample_from_hidden(h_last: torch.Tensor) -> torch.LongTensor:
             logits2 = model.gen_head(h_last)  # [2B,V]
@@ -703,11 +710,12 @@ class LatentMorph(torch.nn.Module):
         # Step 2: inject control tokens, then continue forward
 
         lm = model.language_model
+        lm_backbone = get_lm_backbone(lm)
 
         # Step 1: forward up to inj
         input_up_to_inj = input_emb[:, :prompt_len + inj, :]  # [2B, prompt_len + inj, D]
         with torch.no_grad():
-            out_prefix = _lm_forward_with_optional_position_ids(lm.model, inputs_embeds=input_up_to_inj, use_cache=True, past_key_values=None)
+            out_prefix = _lm_forward_with_optional_position_ids(lm_backbone, inputs_embeds=input_up_to_inj, use_cache=True, past_key_values=None)
             past_kv = _ensure_kv_cache(out_prefix.past_key_values)
 
         # Step 2: strict KV injection (do not append ctrl_tokens; do not increase cache length)
@@ -717,7 +725,7 @@ class LatentMorph(torch.nn.Module):
         emb_inj_m1 = full_emb[:, inj - 1 : inj, :] + ctrl_delta.to(dtype=full_emb.dtype)  # [2B,1,D]
         pos_inj_m1 = torch.full((bsz * 2, 1), prompt_len + (inj - 1), device=device, dtype=torch.long)
         out_inj_m1 = _lm_forward_with_optional_position_ids(
-            lm.model,
+            lm_backbone,
             inputs_embeds=emb_inj_m1,
             use_cache=True,
             past_key_values=past_kv,
@@ -732,7 +740,7 @@ class LatentMorph(torch.nn.Module):
         pos_suffix = torch.arange(prompt_len + inj, prompt_len + n_tokens, device=device, dtype=torch.long)
         pos_suffix = pos_suffix.unsqueeze(0).expand(bsz * 2, -1)  # [2B, N-inj]
         out_full = _lm_forward_with_optional_position_ids(
-            lm.model,
+            lm_backbone,
             inputs_embeds=input_after_inj,
             use_cache=True,
             past_key_values=_ensure_kv_cache(past_kv_injected),

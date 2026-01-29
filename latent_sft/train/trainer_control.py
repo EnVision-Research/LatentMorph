@@ -12,6 +12,7 @@ from transformers.utils import logging as hf_logging
 import torch.distributed as dist
 
 from janus.models import MultiModalityCausalLM, VLChatProcessor
+from ulm_lora_control import UlmLoraConfig, enable_ulm_lora, iter_trainable_params, save_ulm_lora
 from latent_sft.models.config_io import build_latent_controller_config
 from latent_control.controller import LatentController
 
@@ -39,6 +40,20 @@ class TwiGControlTrainer:
         self.cfg = cfg
         self.args = args
         self.dist = ddp_utils.init_distributed(args.device)
+
+        # LoRA control: train ULM (Janus-Pro language_model) with LoRA adapters.
+        self.ulm_lora_cfg = UlmLoraConfig(
+            enabled=bool(int(getattr(args, "lora_control", 0))),
+            r=int(getattr(args, "ulm_lora_r", 8)),
+            alpha=int(getattr(args, "ulm_lora_alpha", 16)),
+            dropout=float(getattr(args, "ulm_lora_dropout", 0.0)),
+            target_modules=[
+                x.strip()
+                for x in str(getattr(args, "ulm_lora_target_modules", "")).split(",")
+                if x.strip()
+            ]
+            or None,
+        )
 
         # Only let rank0 print: silence stdout on other ranks but keep stderr
         # (otherwise we may lose tracebacks on distributed failures).
@@ -128,6 +143,22 @@ class TwiGControlTrainer:
             self.model = AutoModelForCausalLM.from_pretrained(model_path, trust_remote_code=True)
         self.model = self.model.to(device=self.device, dtype=torch.float16).eval()
         self._freeze_all_params(self.model)
+
+        # Optionally enable LoRA on ULM (language_model) and train those adapter weights.
+        if bool(self.ulm_lora_cfg.enabled):
+            if ddp_utils.is_main_process():
+                print(f"[setup] enabling ULM LoRA: r={self.ulm_lora_cfg.r} alpha={self.ulm_lora_cfg.alpha} dropout={self.ulm_lora_cfg.dropout}", flush=True)
+            # Wrap language_model with PEFT LoRA adapters.
+            self.model.language_model = enable_ulm_lora(language_model=self.model.language_model, cfg=self.ulm_lora_cfg)
+            # Keep base model eval; LoRA dropout default is 0.0 (conservative).
+            self.model.language_model.eval()
+            # Under DDP, wrap the (small) LoRA-adapted language_model so grads sync across ranks.
+            if bool(self.dist.ddp):
+                self.model.language_model = ddp_utils.ddp_wrap(self.model.language_model, self.dist.local_rank)
+            if ddp_utils.is_main_process():
+                ulm_trainable = iter_trainable_params(self.model.language_model)
+                n_params = sum(int(p.numel()) for p in ulm_trainable)
+                print(f"[setup] ULM LoRA trainable params: {len(ulm_trainable)} tensors, {n_params} params", flush=True)
         if ddp_utils.is_main_process():
             print("[setup] model loaded + frozen.", flush=True)
 
@@ -177,6 +208,9 @@ class TwiGControlTrainer:
         # Keep controller params in fp32 (otherwise GradScaler may error during unscale of FP16 grads).
         ctrl = ctrl.to(dtype=torch.float32).train()
         self._set_trainable_control(ctrl)
+        if bool(self.ulm_lora_cfg.enabled):
+            # Allow gradients through ULM forward in `_think_latent` even if outer code uses `torch.no_grad()`.
+            ctrl.set_ulm_grad_enabled(True)
         self.controller = ctrl
         if ddp_utils.is_main_process():
             print("[setup] controller ready.", flush=True)
@@ -247,6 +281,19 @@ class TwiGControlTrainer:
 
         # optimizer / scaler
         trainable_params = [p for p in self.loss_model.parameters() if p.requires_grad]
+        if bool(self.ulm_lora_cfg.enabled):
+            # ULM is not inside loss_model.parameters(); add LoRA params explicitly.
+            trainable_params += iter_trainable_params(self.model.language_model)
+            # De-duplicate by parameter identity.
+            seen = set()
+            uniq = []
+            for p in trainable_params:
+                pid = id(p)
+                if pid in seen:
+                    continue
+                seen.add(pid)
+                uniq.append(p)
+            trainable_params = uniq
         self.opt = torch.optim.AdamW(trainable_params, lr=self.args.lr, weight_decay=self.args.weight_decay, foreach=False)
         if self.dist.ddp and self.dist.fsdp:
             from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
@@ -310,6 +357,17 @@ class TwiGControlTrainer:
             tmp2 = out_latest + ".tmp"
             torch.save(ckpt, tmp2)
             os.replace(tmp2, out_latest)
+
+        # 3) Optional: save ULM LoRA adapter (directory)
+        if bool(self.ulm_lora_cfg.enabled):
+            try:
+                out_ulm_step = os.path.join(self.out_dir, f"ulm_lora_step_{int(step):06d}")
+                save_ulm_lora(language_model=self.model.language_model, out_dir=out_ulm_step)
+                if keep_latest:
+                    out_ulm_latest = os.path.join(self.out_dir, "ulm_lora_latest")
+                    save_ulm_lora(language_model=self.model.language_model, out_dir=out_ulm_latest)
+            except Exception as e:
+                print(f"[save] warning: failed to save ULM LoRA adapter: {e}", flush=True)
 
         return ctrl_state
 

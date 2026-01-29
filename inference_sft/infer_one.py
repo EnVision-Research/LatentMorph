@@ -22,6 +22,7 @@ from janus.models import VLChatProcessor  # noqa: E402
 from latent_control.controller import LatentController  # noqa: E402
 from latent_sft.models.config_io import build_latent_controller_config, load_json_config  # noqa: E402
 from latent_sft.models.latent_morph import LatentMorph  # noqa: E402
+from ulm_lora_control import load_ulm_lora  # noqa: E402
 
 
 def _sanitize_filename(s: str, max_len: int = 120) -> str:
@@ -74,6 +75,8 @@ def parse_args():
     ap.add_argument("--config", type=str, default="latent_sft/models/config.json")
     ap.add_argument("--model_path", type=str, default="", help="override cfg.model_path if set")
     ap.add_argument("--model_local_files_only", type=int, default=1)
+    ap.add_argument("--lora_control", type=int, default=0, help="1=enable ULM LoRA; requires --ulm_weights")
+    ap.add_argument("--ulm_weights", type=str, default="", help="ULM LoRA adapter directory (required if --lora_control=1)")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument(
         "--seed_mode",
@@ -152,6 +155,12 @@ def main():
     else:
         model = model.to(device=device)
     model.eval()
+
+    # Optional: load ULM LoRA weights (adapter) for language_model.
+    if bool(int(args.lora_control)):
+        model.language_model = load_ulm_lora(language_model=model.language_model, ulm_weights=str(args.ulm_weights))
+        model.language_model.eval()
+
     lm = getattr(model, "language_model", None)
     if lm is not None and hasattr(lm, "eval"):
         lm.eval()
