@@ -1,4 +1,4 @@
-name: latent
+name: latentmorph
 channels:
   - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main
   - conda-forge

@@ -1,7 +1,7 @@
 <h2 align="center"> Show, Don’t Tell: Morphing Latent Reasoning into Image Generation</h2>
 <div align="center">
 
-_**[Harold Haodong Chen](https://haroldchen19.github.io/)<sup>1,2*</sup>, [Xinxiang Yin](https://scholar.google.com/citations?user=fWBpAoMAAAAJ&hl=en)<sup>3*</sup>,<br>[Wen-Jie Shu](https://wenjieshu.github.io/)<sup>2</sup>, [Hongfei Zhang](https://github.com/EnVision-Research/TiViBench)<sup>1</sup>, [Zixin Zhang](https://scholar.google.com/citations?hl=en&user=BbZ0mwoAAAAJ)<sup>1,2</sup>, [Chenfei Liao](https://chenfei-liao.github.io/)<sup>1</sup>, [Litao Guo](https://scholar.google.com/citations?user=efdm760AAAAJ&hl=en)<sup>1,2</sup>,
+_**[Harold Haodong Chen](https://haroldchen19.github.io/)<sup>1,2*</sup>, [Xinxiang Yin](https://scholar.google.com/citations?user=fWBpAoMAAAAJ&hl=en)<sup>3*</sup>,<br>[Wen-Jie Shu](https://wenjieshu.github.io/)<sup>2</sup>, [Hongfei Zhang](https://github.com/EnVision-Research/LatentMorph)<sup>1</sup>, [Zixin Zhang](https://github.com/EnVision-Research/LatentMorph)<sup>1</sup>, [Chenfei Liao](https://github.com/EnVision-Research/LatentMorph)<sup>1</sup>, [Litao Guo](https://github.com/EnVision-Research/LatentMorph)<sup>1</sup>,
 <br>
 [Qifeng Chen](https://cqf.io/)<sup>2†</sup>, [Ying-Cong Chen](https://www.yingcong.me/)<sup>1,2†</sup>**_
 <br><br>
@@ -16,23 +16,25 @@ _**[Harold Haodong Chen](https://haroldchen19.github.io/)<sup>1,2*</sup>, [Xinxi
 
 </div>
 
+![framework](assets/latentmorph.png)
 
-<table class="center">
+
+<!-- <table class="center">
     <tr>
     <td><img src="assets/latentmorph.png"></td>
     </tr>
-</table>
+</table> -->
 
 
 
-## 🧰 TODO
+<!-- ## 🧰 TODO
 
 - [x] Release training code.
 - [x] Release inference code.
 - [ ] Release Paper.
 - [ ] Release model weights.
 
----
+--- -->
 
 
 
@@ -50,7 +52,7 @@ This repo ships `environment.yml`.
 
 ```bash
 conda env create -f environment.yml
-conda activate ./envs/latent
+conda activate ./envs/latentmorph
 ```
 
 If you don't use conda, make sure you can run:
@@ -138,52 +140,57 @@ LatentMorph has two Inference part provided :
 
 - **RL Inference  Part (`inference_rl`)**
 
-We offer two model for inference,one prompt or a group of prompts.
-
-Before the infer stage, you should make sure you are at the `LatentMorph`
-
-and you should activate the conda environment first : 
+Before running inference, ensure you have activated the environment:
 
 ```bash
-conda activate latent
+conda activate latentmorph
 ```
 
-More, you should prepare the `controller_ckpt`and `rl_ckpt` ( if using the rl to infer )
+### 1. Prepare Model Weights
 
-And we now offer the `controller_ckpt` in huggingface,you can download it,and set the `controller_ckpt` as its path in your device :
+You can download our pre-trained checkpoints from [Hugging Face](https://huggingface.co/datasets/CheeseStar/LatenttMorph):
 
-```
-hf download CheeseStar/LatenttMorph ckpt_sft.pt --repo-type dataset --local-dir .
-```
 
-### Run the inference for one prompt
-
-You can run the inference code for one prompy by : 
-
-```bash
-bash inference_[sft / rl] / run_infer_one.bash
-```
-
-then you can see the result in the `infetr_[sft / rl]_out \ signle.png`  
-
-you can modify the `prompt` and the `output` in the bash
-
-### Run the inference for a group of prompts
-
-If you want to generate a group of pictures,you all prepare a `txt` file to provide the prompts line by line.
-
-You can run the inference code for one prompy by : 
-
-```bash
-bash inference_[sft / rl] / run_infer.bash
-```
-
-then you can see the result in the `infetr_[sft / rl]_out \ bath`   
-
-you can modify the `prompts_file` and the `output` in the bash
-
+| Weight Type | Filename | Download Command |
+| --- | --- | --- |
+| **SFT Controller** | `ckpt_sft.pt` | `huggingface-cli download CheeseStar/LatenttMorph ckpt_sft.pt --repo-type dataset --local-dir .` |
+| **RL Policy** | `ckpt_rl.pt` | (Coming soon) |
+| **SFT Controller w/ LoRA** | `ckpt_sft_LoRA.pt` | (User Trained) |
+| **RL Policy w/ LoRA** | `ckpt_rl_LoRA.pt` | (User Trained) |
 
 ---
+
+
+### 2. Run Inference
+
+We provide two modes for both **SFT** and **RL** stages. Choose the corresponding script folder (`inference_sft` or `inference_rl`).
+
+#### **Option A: Single Prompt (Quick Test)**
+
+Generate an image from a specific text prompt.
+
+```bash
+# Example for SFT
+bash inference_sft/run_infer_one.bash
+```
+
+> **Customization:** Open `run_infer_one.bash` to modify the `prompt` string and `output` path.
+> **Result:** View your image at `inference_[sft/rl]_out/single.png`.
+
+#### **Option B: Batch Processing (Group of Prompts)**
+
+Generate multiple images using a `.txt` file (one prompt per line).
+
+```bash
+# Example for RL
+bash inference_rl/run_infer.bash
+```
+
+> **Setup:** Ensure your `prompts_file` path in the bash script points to your text file.
+> **Result:** All generated images will be saved in `inference_[sft/rl]_out/batch/`.
+
+---
+
 
 <a name="training_suite"></a>
 ## ▶️ Training Suite
@@ -200,26 +207,25 @@ LatentMorph has two training stages:
 bash sft_train.sh
 ```
 
-SFT outputs:
+> You can control the training depth using the `--lora_control` flag in the training script:
+> * `--lora_control 0`: Trains **only** the control modules (Backbone remains frozen).
+> * `--lora_control 1`: Fine-tunes the **Backbone** and control modules together via LoRA.
+
+
+**Outputs:**
 
 - `outputs_sft/checkpoints_control/ckpt_latest.pt`
 - `outputs_sft/checkpoints_control/ckpt_step_*.pt`
 
 ### RL: train trigger policy (policy gradient)
 
-Make sure you already have the SFT checkpoint:
-
-```bash
-ls -lh outputs_sft/checkpoints_control/ckpt_latest.pt
-```
-
-Run RL:
+Ensure your SFT checkpoint exists at `outputs_sft/checkpoints_control/ckpt_latest.pt`.
 
 ```bash
 bash rl_train.sh
 ```
 
-RL outputs:
+**Outputs:**
 
 - `outputs/rl_result/ckpt_latest.pt`
 - `outputs/rl_result/ckpt_step_*.pt`
@@ -238,7 +244,7 @@ TBD...
 
 ## 🍗 Acknowledgement
 
-Our LatentMorph is developed based on the codebases of [Janus-Pro](https://github.com/deepseek-ai/Janus) and [Janus-Pro-R1](https://github.com/wendell0218/Janus-Pro-R1), and we would like to thank the developers of both.
+Our LatentMorph is developed based on the codebases of [Janus-Pro](https://github.com/deepseek-ai/Janus), [Janus-Pro-R1](https://github.com/wendell0218/Janus-Pro-R1) and [DanceGRPO](https://github.com/XueZeyue/DanceGRPO), and we would like to thank the developers of them.
 
 ---
 

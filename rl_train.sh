@@ -27,6 +27,7 @@ torchrun --standalone --nproc_per_node=8 --log_dir "outputs/rl_result/logs/torch
   --penalty_lambda 0.2 \
   --lr 1e-5 --weight_decay 1e-4 --entropy_coef 0.001 \
   --ema 1 --ema_decay 0.999 \
+  --lora_control 0 \
   2>&1 | tee -a "outputs/rl_result/logs/rl_train.log"
 
 

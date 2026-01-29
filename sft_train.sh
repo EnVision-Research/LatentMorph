@@ -20,4 +20,5 @@ python -u -m torch.distributed.run --standalone --nproc_per_node=8 \
   --num_workers 4 \
   --image_key url \
   --caption_key prompt \
+  --lora_control 0 \
   2>&1 | tee -a "outputs_sft/logs/sft_train.log"
