@@ -28,7 +28,7 @@ _**[Harold Haodong Chen](https://haroldchen19.github.io/)<sup>1,2*</sup>, [Xinxi
 ## 🧰 TODO
 
 - [x] Release training code.
-- [ ] Release inference code.
+- [x] Release inference code.
 - [ ] Release Paper.
 - [ ] Release model weights.
 
