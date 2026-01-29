@@ -150,6 +150,12 @@ conda activate latent
 
 More, you should prepare the `controller_ckpt`and `rl_ckpt` ( if using the rl to infer )
 
+And we now offer the `controller_ckpt` in huggingface,you can download it,and set the `controller_ckpt` as its path in your device :
+
+```
+hf download CheeseStar/LatenttMorph ckpt_sft.pt --repo-type dataset --local-dir .
+```
+
 ### Run the inference for one prompt
 
 You can run the inference code for one prompy by : 
