@@ -1,7 +1,7 @@
 <h2 align="center"> Show, Don’t Tell: Morphing Latent Reasoning into Image Generation</h2>
 <div align="center">
 
-_**[Harold Haodong Chen](https://haroldchen19.github.io/)<sup>1,2*</sup>, [Xinxiang Yin](https://scholar.google.com/citations?user=fWBpAoMAAAAJ&hl=en)<sup>3*</sup>,<br>[Wen-Jie Shu](https://wenjieshu.github.io/)<sup>2</sup>, [Hongfei Zhang](https://github.com/EnVision-Research/LatentMorph)<sup>1</sup>, [Zixin Zhang](https://github.com/EnVision-Research/LatentMorph)<sup>1</sup>, [Chenfei Liao](https://github.com/EnVision-Research/LatentMorph)<sup>1</sup>, [Litao Guo](https://github.com/EnVision-Research/LatentMorph)<sup>1</sup>,
+_**[Harold Haodong Chen](https://haroldchen19.github.io/)<sup>1,2*</sup>, [Xinxiang Yin](https://scholar.google.com/citations?user=fWBpAoMAAAAJ&hl=en)<sup>1,3*</sup>,<br>[Wen-Jie Shu](https://wenjieshu.github.io/)<sup>2</sup>, [Hongfei Zhang](https://github.com/EnVision-Research/LatentMorph)<sup>1</sup>, [Zixin Zhang](https://github.com/EnVision-Research/LatentMorph)<sup>1</sup>, [Chenfei Liao](https://github.com/EnVision-Research/LatentMorph)<sup>1</sup>, [Litao Guo](https://github.com/EnVision-Research/LatentMorph)<sup>1</sup>,
 <br>
 [Qifeng Chen](https://cqf.io/)<sup>2†</sup>, [Ying-Cong Chen](https://www.yingcong.me/)<sup>1,2†</sup>**_
 <br><br>
