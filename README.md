@@ -11,7 +11,7 @@ _**[Harold Haodong Chen](https://haroldchen19.github.io/)<sup>1,2*</sup>, [Xinxi
 
 <h5 align="center"> If you like our project, please give us a star ⭐ on GitHub for latest update.  </h2>
 
- <a href='https://arxiv.org/abs/2511.13704'><img src='https://img.shields.io/badge/arXiv-xxxx.xxxxx-b31b1b.svg'></a>
+ <a href='https://arxiv.org/abs/2602.02227'><img src='https://img.shields.io/badge/arXiv-2602.02227-b31b1b.svg'></a>
 <br>
 
 </div>
@@ -237,7 +237,12 @@ bash rl_train.sh
 ## 📝 Citation
 Please consider citing our paper if you find LatentMorph is useful:
 ```bib
-TBD...
+@article{chen2026show,
+  title={Show, Don't Tell: Morphing Latent Reasoning into Image Generation},
+  author={Chen, Harold Haodong and Yin, Xinxiang and Shu, Wen-Jie and Zhang, Hongfei and Zhang, Zixin and Liao, Chenfei and Guo, Litao and Chen, Qifeng and Chen, Ying-Cong},
+  journal={arXiv preprint arXiv:2602.02227},
+  year={2026}
+}
 ```
 
 ---
