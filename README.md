@@ -153,8 +153,8 @@ You can download our pre-trained checkpoints from [Hugging Face](https://hugging
 
 | Weight Type | Filename | Download Command |
 | --- | --- | --- |
-| **SFT Controller** | `ckpt_sft.pt` | `huggingface-cli download CheeseStar/LatenttMorph ckpt_sft.pt --repo-type dataset --local-dir .` |
-| **RL Policy** | `ckpt_rl.pt` | (Coming soon) |
+| **SFT Controller** | `ckpt_sft.pt` | `huggingface-cli download CheeseStar/LatenMorph sft.pt --local-dir .` |
+| **RL Policy** | `ckpt_rl.pt` | `huggingface-cli download CheeseStar/LatenMorph rl.pt --local-dir .` |
 | **SFT Controller w/ LoRA** | `ckpt_sft_LoRA.pt` | (User Trained) |
 | **RL Policy w/ LoRA** | `ckpt_rl_LoRA.pt` | (User Trained) |
 
