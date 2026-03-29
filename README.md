@@ -254,4 +254,4 @@ Our LatentMorph is developed based on the codebases of [Janus-Pro](https://githu
 ---
 
 ## 📪 Contact
-For any question, feel free to open a issue or email `haroldchen328@gmail.com`.
+For any question, feel free to open an issue or email `haroldchen328@gmail.com`.
