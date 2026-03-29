@@ -148,13 +148,13 @@ conda activate latentmorph
 
 ### 1. Prepare Model Weights
 
-You can download our pre-trained checkpoints from [Hugging Face](https://huggingface.co/datasets/CheeseStar/LatenttMorph):
+You can download our pre-trained checkpoints from [Hugging Face](https://huggingface.co/CheeseStar/LatentMorph):
 
 
 | Weight Type | Filename | Download Command |
 | --- | --- | --- |
-| **SFT Controller** | `ckpt_sft.pt` | `huggingface-cli download CheeseStar/LatenMorph sft.pt --local-dir .` |
-| **RL Policy** | `ckpt_rl.pt` | `huggingface-cli download CheeseStar/LatenMorph rl.pt --local-dir .` |
+| **SFT Controller** | `ckpt_sft.pt` | `huggingface-cli download CheeseStar/LatentMorph sft.pt --local-dir .` |
+| **RL Policy** | `ckpt_rl.pt` | `huggingface-cli download CheeseStar/LatentMorph rl.pt --local-dir .` |
 | **SFT Controller w/ LoRA** | `ckpt_sft_LoRA.pt` | (User Trained) |
 | **RL Policy w/ LoRA** | `ckpt_rl_LoRA.pt` | (User Trained) |
 
